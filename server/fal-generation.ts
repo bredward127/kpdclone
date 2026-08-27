@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { AppDatabase } from "./db";
 import { getProjectForUser } from "./db";
-import { getGenerationJobForUser, getGeneratedAssetForUser } from "./db-studio";
+import { createAuditEvent, getGenerationJobForUser, getGeneratedAssetForUser } from "./db-studio";
 import { getPromptVersionForUser } from "./prompt-composer";
 import { classifyContentPolicy, recordContentPolicyReview } from "./publishing";
 import { getFalModel } from "./fal-models";
@@ -221,6 +221,7 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
   async function processWebhook(db: AppDatabase, falPayload: FalWebhookPayload): Promise<{ duplicate: boolean; jobId: string | null; assetId?: string }> {
     const job = findJobByFalRequestId(db, falPayload.request_id);
     if (!job) return { duplicate: false, jobId: null };
+    createAuditEvent(db, job.userId, { projectId: job.projectId, actorUserId: job.userId, entityType: "generation_job", entityId: job.id, eventType: "provider_callback", metadataJson: JSON.stringify({ providerStatus: falPayload.status, duplicate: Boolean(job.webhookProcessedAt || job.localStatus === "completed") }) });
     if (job.webhookProcessedAt || job.localStatus === "completed") return { duplicate: true, jobId: job.id, assetId: findAssetForJob(db, job.userId, job.id)?.id };
     if (falPayload.status === "ERROR") {
       setJob(db, job.userId, job.id, { local_status: "failed", status: "failed", provider_status: "ERROR", error_classification: "provider_http", error_message: "FAL reported a generation error.", completed_at: now(), webhook_processed_at: now() });

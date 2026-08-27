@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS security_deletion_audit (
   project_hash TEXT NOT NULL,
   deleted_at TEXT NOT NULL,
   deleted_storage_count INTEGER NOT NULL,
+  event_type TEXT NOT NULL DEFAULT 'project_deleted',
   retained_audit_only INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS security_deletion_audit_deleted_idx ON security_deletion_audit(deleted_at);

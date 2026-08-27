@@ -13,6 +13,7 @@ import { getReferenceValidationLimits } from "./reference-validation";
 import { composePromptFromSavedProject, createPromptVersion, freezePromptVersion, getPromptVersionForUser, listPromptVersions, restorePromptVersion } from "./prompt-composer";
 import { createFalGenerationService, type FalGenerationService } from "./fal-generation";
 import { getFalQueueClient } from "./fal-queue";
+import { createAuditEvent } from "./db-studio";
 import { falModelRegistry, listSelectableFalModels } from "./fal-models";
 import { getQualityResultForAsset } from "./asset-quality";
 import { createCoverPlanVersion, coverArtPrompt, getLatestCoverPlan, importCoverTemplate, invalidateCoverPlansForInteriorChange, listCoverTemplates, makeInteriorFingerprint, type CoverPlanInput } from "./cover-desk";
@@ -23,6 +24,7 @@ import { computeFrozenProjectVersion, createFinalExport, type FinalExportInput }
 import { addProvenanceEntry, assertPublishingReadyForExport, classifyContentPolicy, createPublishingMetadataVersion, finalizePublishingMetadataVersion, listProvenance, recordContentPolicyReview, type PublishingMetadataInput, type ProvenanceInput } from "./publishing";
 import { createProject, deleteProjectDataForUser, getProjectForUser, listProjects, updateProjectForUser, upsertUser, type AppDatabase, type UserRecord } from "./db";
 import { createRateLimiter } from "./security";
+import { cleanupExpiredObjects, getOperationsDashboard, getRecoveryCandidates, reconcileOneJob, recordOperationalRecovery, retryOneStorageCopy, regenerateOneExport } from "./operations";
 
 export type AppContext = {
   db: AppDatabase;
@@ -81,8 +83,17 @@ export function createAppRouter(
   const exportLimiter = createRateLimiter(60_000, 6);
   const policyLimiter = createRateLimiter(60_000, 30);
   const enforceLimit = (limiter: ReturnType<typeof createRateLimiter>, userId: string, action: string) => { const result = limiter(`${action}:${userId}`); if (!result.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: `Too many ${action} requests. Retry in ${result.retryAfterSeconds} seconds.` }); };
+  const recordWorkflowEvent = (userId: string, projectId: string | undefined, entityType: string, entityId: string, eventType: string, metadataJson = "{}") => createAuditEvent(db, userId, { projectId, actorUserId: userId, entityType, entityId, eventType, metadataJson });
 
   return router({
+    operations: router({
+      dashboard: protectedProcedure.query(({ ctx }) => { if (!isFalAdministrator(ctx.user.id, falAdminEnv)) throw new TRPCError({ code: "FORBIDDEN", message: "Operations dashboard is restricted to administrators." }); return getOperationsDashboard(db); }),
+      recoveryCandidates: protectedProcedure.query(({ ctx }) => { if (!isFalAdministrator(ctx.user.id, falAdminEnv)) throw new TRPCError({ code: "FORBIDDEN", message: "Recovery actions are restricted to administrators." }); return getRecoveryCandidates(db); }),
+      reconcileJob: protectedProcedure.input(z.object({ jobId: z.string().min(1) })).mutation(async ({ ctx, input }) => { if (!isFalAdministrator(ctx.user.id, falAdminEnv)) throw new TRPCError({ code: "FORBIDDEN", message: "Recovery actions are restricted to administrators." }); if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." }); try { return await reconcileOneJob(db, generationService, ctx.user.id, input.jobId); } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "The selected job could not be reconciled." }); } }),
+      retryStorageCopy: protectedProcedure.input(z.object({ operationId: z.string().min(1) })).mutation(async ({ ctx, input }) => { if (!isFalAdministrator(ctx.user.id, falAdminEnv)) throw new TRPCError({ code: "FORBIDDEN", message: "Recovery actions are restricted to administrators." }); try { return await retryOneStorageCopy(db, storage, ctx.user.id, input.operationId); } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "The selected storage operation is not safely retryable." }); } }),
+      regenerateExport: protectedProcedure.input(z.object({ exportPackageId: z.string().min(1) })).mutation(async ({ ctx, input }) => { if (!isFalAdministrator(ctx.user.id, falAdminEnv)) throw new TRPCError({ code: "FORBIDDEN", message: "Recovery actions are restricted to administrators." }); try { return await regenerateOneExport(db, storage, ctx.user.id, input.exportPackageId); } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "The selected frozen export could not be regenerated." }); } }),
+      cleanup: protectedProcedure.mutation(async ({ ctx }) => { if (!isFalAdministrator(ctx.user.id, falAdminEnv)) throw new TRPCError({ code: "FORBIDDEN", message: "Cleanup controls are restricted to administrators." }); const result = await cleanupExpiredObjects(db, storage); recordOperationalRecovery(db, ctx.user.id, "retention_cleanup", "scheduled", "succeeded", "bounded_cleanup"); return result; }),
+    }),
     auth: router({
       me: publicProcedure.query(({ ctx }) => ctx.user),
       logout: publicProcedure.mutation(({ ctx }) => {
@@ -137,7 +148,9 @@ export function createAppRouter(
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) {
             throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
           }
-          return createBookBrief(db, ctx.user.id, { id: crypto.randomUUID(), ...input });
+          const brief = createBookBrief(db, ctx.user.id, { id: crypto.randomUUID(), ...input });
+          recordWorkflowEvent(ctx.user.id, input.projectId, "book_brief", brief.id, "brief_changed", JSON.stringify({ version: brief.version }));
+          return brief;
         }),
       }),
       prompts: router({
@@ -163,7 +176,9 @@ export function createAppRouter(
         })).mutation(({ ctx, input }) => {
           try {
             const composed = composePromptFromSavedProject(db, ctx.user.id, input);
-            return createPromptVersion(db, ctx.user.id, composed, input);
+            const version = createPromptVersion(db, ctx.user.id, composed, input);
+            recordWorkflowEvent(ctx.user.id, input.projectId, "prompt_version", version.id, "prompt_version_created", JSON.stringify({ endpoint: input.generationEndpoint, aspectRatio: input.aspectRatio }));
+            return version;
           } catch (error) {
             if (error instanceof Error && error.message === "Project not found.") throw new TRPCError({ code: "NOT_FOUND", message: error.message });
             if (error instanceof Error && error.message === "Page plan not found.") throw new TRPCError({ code: "NOT_FOUND", message: error.message });
@@ -244,7 +259,7 @@ export function createAppRouter(
         })).mutation(async ({ ctx, input }) => {
           if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
           enforceLimit(submitLimiter, ctx.user.id, "generation");
-          try { return await generationService.submit(db, ctx.user.id, input); }
+          try { const result = await generationService.submit(db, ctx.user.id, input); recordWorkflowEvent(ctx.user.id, input.projectId, "generation_job", result.localJobId, "generation_submitted", JSON.stringify({ endpoint: input.generationEndpoint, requestKind: input.requestKind })); return result; }
           catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Generation could not be submitted safely." }); }
         }),
         cancel: protectedProcedure.input(z.object({ jobId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
@@ -387,17 +402,19 @@ export function createAppRouter(
           enforceLimit(exportLimiter, ctx.user.id, "interior export");
           try {
             const fonts: InteriorFont[] = input.fonts.map((font) => ({ id: font.id, family: font.family, bytes: Buffer.from(font.bytesBase64, "base64"), permitted: font.permitted }));
-            return await assembleInteriorExport(db, storage, ctx.user.id, { ...input, fonts, pages: input.pages as Array<{ id: string; pageNumber: number; pageType: InteriorPageType; assetId?: string; assetVersion?: string; assetChecksumSha256?: string; textBlocks?: never[] }> });
+            const result = await assembleInteriorExport(db, storage, ctx.user.id, { ...input, fonts, pages: input.pages as Array<{ id: string; pageNumber: number; pageType: InteriorPageType; assetId?: string; assetVersion?: string; assetChecksumSha256?: string; textBlocks?: never[] }> });
+            recordWorkflowEvent(ctx.user.id, input.projectId, "interior_export", String((result as { id?: string }).id ?? "created"), "export_created");
+            return result;
           } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Interior export could not be assembled." }); }
         }),
         createCover: protectedProcedure.input(projectIdInput.extend({
           planVersionId: z.string().min(1), templateImportId: z.string().min(1), frontArtPlacement: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }).optional(), backArtPlacement: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }).optional(), spineTextPlacement: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }).optional(), barcodePlacement: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }).optional(), fonts: z.array(z.object({ id: z.string().min(1), family: z.string().min(1).max(200), bytesBase64: z.string().min(1).max(20_000_000), permitted: z.boolean() })).max(8).default([]),
         })).mutation(async ({ ctx, input }) => {
           enforceLimit(exportLimiter, ctx.user.id, "cover export");
-          try { const fonts: CoverFont[] = input.fonts.map((font) => ({ id: font.id, family: font.family, bytes: Buffer.from(font.bytesBase64, "base64"), permitted: font.permitted })); return await composeCoverExport(db, storage, ctx.user.id, input.projectId, { ...input, fonts }); }
+          try { const fonts: CoverFont[] = input.fonts.map((font) => ({ id: font.id, family: font.family, bytes: Buffer.from(font.bytesBase64, "base64"), permitted: font.permitted })); const result = await composeCoverExport(db, storage, ctx.user.id, input.projectId, { ...input, fonts }); recordWorkflowEvent(ctx.user.id, input.projectId, "cover_export", String((result as { id?: string }).id ?? "created"), "export_created"); return result; }
           catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Full-wrap cover export could not be composed." }); }
         }),
-        createFinalPackage: protectedProcedure.input(finalExportInput).mutation(async ({ ctx, input }) => { enforceLimit(exportLimiter, ctx.user.id, "final export"); try { return await createFinalExport(db, storage, ctx.user.id, input as FinalExportInput); } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Final export could not be created." }); } }),
+        createFinalPackage: protectedProcedure.input(finalExportInput).mutation(async ({ ctx, input }) => { enforceLimit(exportLimiter, ctx.user.id, "final export"); try { const result = await createFinalExport(db, storage, ctx.user.id, input as FinalExportInput); recordWorkflowEvent(ctx.user.id, input.projectId, "export_package", result.exportPackageId, "export_created"); return result; } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Final export could not be created." }); } }),
         listFinalPackages: protectedProcedure.input(projectIdInput).query(async ({ ctx, input }) => { if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." }); const rows = db.prepare(`SELECT id, frozen_project_version AS frozenProjectVersion, COALESCE(kdp_preflight_run_id, validation_run_id) AS validationRunId, status, artifact_hashes_json AS artifactHashesJson, expires_at AS expiresAt, retention_status AS retentionStatus, created_at AS createdAt, zip_storage_reference AS zipReference FROM export_packages WHERE user_id = ? AND project_id = ? ORDER BY created_at DESC`).all(ctx.user.id, input.projectId) as Array<Record<string, unknown>>; return Promise.all(rows.map(async (row) => ({ id: String(row.id), frozenProjectVersion: String(row.frozenProjectVersion ?? ""), validationRunId: String(row.validationRunId ?? ""), status: String(row.status), artifactHashes: JSON.parse(String(row.artifactHashesJson ?? "{}")), expiresAt: row.expiresAt ? String(row.expiresAt) : null, retentionStatus: String(row.retentionStatus), createdAt: String(row.createdAt), zipAccessUrl: row.zipReference && row.retentionStatus !== "expired" && (!row.expiresAt || new Date(String(row.expiresAt)).getTime() > Date.now()) ? await storage.createAccessUrl(String(row.zipReference), 900) : null }))); }),
         latestInterior: protectedProcedure.input(projectIdInput).query(async ({ ctx, input }) => {
           const run = db.prepare(`SELECT * FROM interior_export_runs WHERE user_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 1`).get(ctx.user.id, input.projectId) as Record<string, unknown> | undefined;
@@ -508,7 +525,9 @@ export function createAppRouter(
       }),
       create: protectedProcedure.input(projectInput).mutation(({ ctx, input }) => {
         const id = crypto.randomUUID();
-        return createProject(db, ctx.user.id, { id, ...input });
+        const project = createProject(db, ctx.user.id, { id, ...input });
+        recordWorkflowEvent(ctx.user.id, id, "book_project", id, "project_created");
+        return project;
       }),
       update: protectedProcedure
         .input(projectIdInput.extend(projectInput.partial().shape))
