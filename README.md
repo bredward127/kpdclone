@@ -38,3 +38,9 @@ For a local authenticated browser session during development, open `/auth/dev-lo
 ## Scope intentionally deferred
 
 This phase does not call FAL, generate PDFs, create private object-storage adapters, or add page/asset/job/package tables. The production workflow will later add those capabilities behind the small asynchronous queue and explicit page-level approval boundary.
+
+## Normalized studio schema
+
+Migration `migrations/0002_studio_schema.sql` upgrades the original project shell into the normalized studio model. Run `pnpm db:migrate` during deployment or release operations; the command is idempotent and records applied versions in `schema_migrations`. It creates `book_briefs`, `book_blueprints`, `page_plans`, `prompt_versions`, `generation_jobs`, `generated_assets`, `asset_variants`, `cover_plans`, `layout_templates`, `export_packages`, `validation_runs`, and `audit_events`, plus relational link tables for project, page, and prompt visual references. Every entity uses a stable text ID, a user ownership column, foreign keys, lifecycle checks, and UTC timestamps. File bytes are never stored in the database; artifact tables store private-storage references, checksums, dimensions, MIME types, and byte sizes only.
+
+The lifecycle graph is defined in `shared/studio.ts`. Protected procedures and helpers require the current user ID in every project-scoped query and write. Invalid job or asset transitions are rejected, page rejection requires a reason, and successful lifecycle transitions create audit events. The current task does not call FAL or generate PDFs.

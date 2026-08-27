@@ -19,24 +19,11 @@ export type ProjectRecord = {
   updatedAt: string;
 };
 
-const schema = `
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    email TEXT,
-    name TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+const migrationTableSql = `
+  CREATE TABLE IF NOT EXISTS schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   );
-
-  CREATE TABLE IF NOT EXISTS projects (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    brief TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE INDEX IF NOT EXISTS projects_user_id_idx ON projects(user_id);
 `;
 
 export function createDatabase(filename = process.env.DATABASE_PATH ?? path.join(process.cwd(), "data", "kdp.db")): AppDatabase {
@@ -46,15 +33,37 @@ export function createDatabase(filename = process.env.DATABASE_PATH ?? path.join
 
   const db = new Database(filename);
   db.pragma("foreign_keys = ON");
-  db.exec(schema);
+  applyMigrations(db);
   return db;
+}
+
+export function applyMigrations(db: AppDatabase, migrationsDir = path.join(process.cwd(), "migrations")): void {
+  db.exec(migrationTableSql);
+  const applied = new Set(
+    (db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: string }>).map((row) => row.version),
+  );
+
+  if (!fs.existsSync(migrationsDir)) {
+    throw new Error(`Migration directory is missing: ${migrationsDir}`);
+  }
+
+  const migrationFiles = fs.readdirSync(migrationsDir).filter((file) => /^\d+_.+\.sql$/.test(file)).sort();
+  for (const file of migrationFiles) {
+    if (applied.has(file)) continue;
+    const sql = fs.readFileSync(path.join(migrationsDir, file), "utf8");
+    const runMigration = db.transaction(() => {
+      db.exec(sql);
+      db.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(file);
+    });
+    runMigration();
+  }
 }
 
 export function upsertUser(db: AppDatabase, user: UserRecord): UserRecord {
   db.prepare(
-    `INSERT INTO users (id, email, name) VALUES (@id, @email, @name)
+    `INSERT INTO users (id, email, name, created_at) VALUES (@id, @email, @name, @createdAt)
      ON CONFLICT(id) DO UPDATE SET email = excluded.email, name = excluded.name`,
-  ).run(user);
+  ).run({ ...user, createdAt: new Date().toISOString() });
   return user;
 }
 
@@ -63,7 +72,7 @@ export function listProjects(db: AppDatabase, userId: string): ProjectRecord[] {
     .prepare(
       `SELECT id, user_id AS userId, name, brief,
               created_at AS createdAt, updated_at AS updatedAt
-       FROM projects
+       FROM book_projects
        WHERE user_id = ?
        ORDER BY updated_at DESC, created_at DESC`,
     )
@@ -71,10 +80,11 @@ export function listProjects(db: AppDatabase, userId: string): ProjectRecord[] {
 }
 
 export function createProject(db: AppDatabase, userId: string, input: { id: string; name: string; brief: string }): ProjectRecord {
+  const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO projects (id, user_id, name, brief)
-     VALUES (@id, @userId, @name, @brief)`,
-  ).run({ ...input, userId });
+    `INSERT INTO book_projects (id, user_id, name, brief, title, created_at, updated_at)
+     VALUES (@id, @userId, @name, @brief, @name, @now, @now)`,
+  ).run({ ...input, userId, now });
 
   return getProjectForUser(db, userId, input.id)!;
 }
@@ -85,7 +95,7 @@ export function getProjectForUser(db: AppDatabase, userId: string, projectId: st
       .prepare(
         `SELECT id, user_id AS userId, name, brief,
                 created_at AS createdAt, updated_at AS updatedAt
-         FROM projects
+         FROM book_projects
          WHERE id = ? AND user_id = ?`,
       )
       .get(projectId, userId) as ProjectRecord | undefined
@@ -104,15 +114,15 @@ export function updateProjectForUser(
   const name = input.name ?? existing.name;
   const brief = input.brief ?? existing.brief;
   db.prepare(
-    `UPDATE projects
-     SET name = @name, brief = @brief, updated_at = CURRENT_TIMESTAMP
+    `UPDATE book_projects
+     SET name = @name, title = @name, brief = @brief, updated_at = @updatedAt
      WHERE id = @projectId AND user_id = @userId`,
-  ).run({ name, brief, projectId, userId });
+  ).run({ name, brief, projectId, userId, updatedAt: new Date().toISOString() });
 
   return getProjectForUser(db, userId, projectId);
 }
 
 export function deleteProjectForUser(db: AppDatabase, userId: string, projectId: string): boolean {
-  const result = db.prepare(`DELETE FROM projects WHERE id = ? AND user_id = ?`).run(projectId, userId);
+  const result = db.prepare(`DELETE FROM book_projects WHERE id = ? AND user_id = ?`).run(projectId, userId);
   return result.changes === 1;
 }
