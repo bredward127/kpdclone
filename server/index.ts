@@ -66,7 +66,9 @@ app.post("/api/fal/webhook", express.raw({ type: "application/json", limit: "2mb
     db.prepare("INSERT INTO fal_webhook_events (request_id, payload_sha256, received_at) VALUES (?, ?, ?)").run(requestId, payloadHash, new Date().toISOString());
   } catch {
     const prior = db.prepare("SELECT payload_sha256 FROM fal_webhook_events WHERE request_id = ?").get(requestId) as { payload_sha256?: string } | undefined;
-    if (prior?.payload_sha256 !== payloadHash) { res.status(409).json({ message: "Webhook request ID was already used with a different payload." }); return; }
+    const reason = prior?.payload_sha256 !== payloadHash ? "payload_conflict" : "replay";
+    db.prepare("INSERT INTO fal_webhook_conflicts (id, request_id, payload_sha256, reason, received_at) VALUES (?, ?, ?, ?, ?)").run(crypto.randomUUID(), requestId, payloadHash, reason, new Date().toISOString());
+    if (reason === "payload_conflict") { res.status(409).json({ message: "Webhook request ID was already used with a different payload." }); return; }
     res.status(409).json({ message: "Webhook request has already been accepted." });
     return;
   }

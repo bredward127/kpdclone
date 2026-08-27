@@ -33,7 +33,8 @@ export function getOperationsDashboard(db: AppDatabase): OperationsDashboard {
   const storageFailures = grouped(db, "SELECT COALESCE(last_error_code, 'unknown') AS code, COUNT(*) AS count FROM storage_copy_operations WHERE status IN ('failed', 'retryable') GROUP BY COALESCE(last_error_code, 'unknown')", "code") as OperationsDashboard["storageFailures"];
   const validationFailures = grouped(db, "SELECT CASE WHEN error_count > 0 THEN 'blocking' WHEN warning_count > 0 THEN 'warning' ELSE 'none' END AS category, COUNT(*) AS count FROM validation_runs GROUP BY category", "category") as OperationsDashboard["validationFailures"];
   const webhook = db.prepare("SELECT COUNT(*) AS accepted, SUM(CASE WHEN processed_at IS NOT NULL THEN 1 ELSE 0 END) AS processed, SUM(CASE WHEN processed_at IS NULL THEN 1 ELSE 0 END) AS pending FROM fal_webhook_events").get() as { accepted?: number; processed?: number; pending?: number };
-  return { generatedAt: new Date().toISOString(), generationJobsByStatus, providerErrorsByCode, webhook: { accepted: Number(webhook.accepted ?? 0), processed: Number(webhook.processed ?? 0), pending: Number(webhook.pending ?? 0), conflicts: 0 }, exports, storageFailures, validationFailures };
+  const conflicts = db.prepare("SELECT COUNT(*) AS count FROM fal_webhook_conflicts").get() as { count?: number };
+  return { generatedAt: new Date().toISOString(), generationJobsByStatus, providerErrorsByCode, webhook: { accepted: Number(webhook.accepted ?? 0), processed: Number(webhook.processed ?? 0), pending: Number(webhook.pending ?? 0), conflicts: Number(conflicts.count ?? 0) }, exports, storageFailures, validationFailures };
 }
 
 export function recordOperationalRecovery(db: AppDatabase, actorUserId: string, action: string, targetId: string, outcome: string, safeCode: string): void {
