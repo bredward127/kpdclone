@@ -1,0 +1,87 @@
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS cover_template_imports (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  retrieved_at TEXT NOT NULL,
+  calculator_inputs_json TEXT NOT NULL,
+  guide_storage_reference TEXT NOT NULL,
+  guide_mime_type TEXT NOT NULL CHECK (guide_mime_type IN ('application/pdf', 'image/png')),
+  guide_byte_size INTEGER NOT NULL CHECK (guide_byte_size > 0),
+  full_cover_width_inches REAL NOT NULL CHECK (full_cover_width_inches > 0),
+  full_cover_height_inches REAL NOT NULL CHECK (full_cover_height_inches > 0),
+  bounds_json TEXT NOT NULL,
+  safe_zones_json TEXT NOT NULL,
+  bleed_zones_json TEXT NOT NULL,
+  barcode_margin_json TEXT NOT NULL,
+  spine_safe_zone_json TEXT NOT NULL,
+  interior_fingerprint TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'current' CHECK (status IN ('current', 'superseded', 'invalidated')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(user_id, id),
+  FOREIGN KEY (user_id, project_id) REFERENCES book_projects(user_id, id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS cover_template_project_idx ON cover_template_imports(user_id, project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS cover_plan_versions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL,
+  version INTEGER NOT NULL CHECK (version > 0),
+  binding TEXT NOT NULL CHECK (binding IN ('paperback')),
+  trim_width_inches REAL NOT NULL CHECK (trim_width_inches > 0),
+  trim_height_inches REAL NOT NULL CHECK (trim_height_inches > 0),
+  final_interior_page_count INTEGER NOT NULL CHECK (final_interior_page_count > 0),
+  paper_selection TEXT NOT NULL,
+  ink_selection TEXT NOT NULL,
+  reading_direction TEXT NOT NULL CHECK (reading_direction IN ('ltr', 'rtl')),
+  title TEXT NOT NULL,
+  subtitle TEXT NOT NULL DEFAULT '',
+  author TEXT NOT NULL,
+  imprint TEXT NOT NULL DEFAULT '',
+  back_cover_copy TEXT NOT NULL DEFAULT '',
+  barcode_decision TEXT NOT NULL CHECK (barcode_decision IN ('amazon_placed', 'creator_supplied')),
+  spine_text_permitted INTEGER NOT NULL CHECK (spine_text_permitted IN (0, 1)),
+  front_art_asset_id TEXT,
+  back_art_asset_id TEXT,
+  decorative_asset_ids_json TEXT NOT NULL DEFAULT '[]',
+  front_art_prompt TEXT NOT NULL,
+  back_art_prompt TEXT NOT NULL DEFAULT '',
+  decorative_art_prompt TEXT NOT NULL DEFAULT '',
+  placement_json TEXT NOT NULL DEFAULT '{}',
+  template_import_id TEXT,
+  interior_fingerprint TEXT NOT NULL,
+  inputs_confirmed INTEGER NOT NULL DEFAULT 0 CHECK (inputs_confirmed IN (0, 1)),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'needs_template_refresh', 'needs_review', 'approved', 'superseded', 'archived')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(user_id, id),
+  UNIQUE(user_id, project_id, version),
+  FOREIGN KEY (user_id, project_id) REFERENCES book_projects(user_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id, template_import_id) REFERENCES cover_template_imports(user_id, id) ON DELETE SET NULL,
+  FOREIGN KEY (user_id, front_art_asset_id) REFERENCES generated_assets(user_id, id) ON DELETE SET NULL,
+  FOREIGN KEY (user_id, back_art_asset_id) REFERENCES generated_assets(user_id, id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS cover_plan_project_idx ON cover_plan_versions(user_id, project_id, version DESC);
+
+CREATE TABLE IF NOT EXISTS cover_plan_assets (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL,
+  cover_plan_version_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('front_focal_art', 'back_background_art', 'decorative_element')),
+  generated_asset_id TEXT,
+  reference_asset_id TEXT,
+  placement_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  UNIQUE(user_id, id),
+  FOREIGN KEY (user_id, project_id) REFERENCES book_projects(user_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id, cover_plan_version_id) REFERENCES cover_plan_versions(user_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id, generated_asset_id) REFERENCES generated_assets(user_id, id) ON DELETE SET NULL,
+  FOREIGN KEY (user_id, reference_asset_id) REFERENCES reference_assets(user_id, id) ON DELETE SET NULL,
+  CHECK ((generated_asset_id IS NOT NULL AND reference_asset_id IS NULL) OR (generated_asset_id IS NULL AND reference_asset_id IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS cover_plan_assets_version_idx ON cover_plan_assets(user_id, cover_plan_version_id, role);

@@ -12,6 +12,8 @@ import { createAppRouter } from "./routers";
 import { getReferenceAssetByStorageKeyForUser } from "./reference-assets";
 import { getGeneratedAssetByStorageReferenceForUser } from "./db-studio";
 import { readPrivateStorageBytes, verifyStorageAccessSignature } from "./storage";
+import crypto from "node:crypto";
+import { applySecurityHeaders, createRateLimiter, redactSensitive } from "./security";
 
 assertFalConfiguredForProduction();
 assertFalWebhookConfiguredForProduction();
@@ -22,8 +24,12 @@ const falConfig = loadFalConfig();
 const generationService = falConfig ? createFalGenerationService({ adapter: getFalQueueClient(), storage, webhookUrl: process.env.FAL_WEBHOOK_URL }) : undefined;
 const appRouter = createAppRouter(db, { storage, generationService });
 const app = express();
+const webhookLimiter = createRateLimiter(60_000, 120);
+app.use((_req, res, next) => { applySecurityHeaders(res); next(); });
 
 app.post("/api/fal/webhook", express.raw({ type: "application/json", limit: "2mb" }), async (req, res) => {
+  const limit = webhookLimiter(`webhook:${req.ip ?? "unknown"}`);
+  if (!limit.allowed) { res.setHeader("Retry-After", String(limit.retryAfterSeconds)); res.status(429).json({ message: "Webhook rate limit exceeded." }); return; }
   if (process.env.FAL_WEBHOOK_ENABLED !== "true") {
     res.status(503).json({ message: "FAL webhooks are disabled until webhook verification is enabled." });
     return;
@@ -54,9 +60,19 @@ app.post("/api/fal/webhook", express.raw({ type: "application/json", limit: "2mb
     res.status(400).json({ message: "FAL webhook payload is malformed." });
     return;
   }
+  const requestId = String((payload as Record<string, unknown>).request_id);
+  const payloadHash = crypto.createHash("sha256").update(rawBody).digest("hex");
+  try {
+    db.prepare("INSERT INTO fal_webhook_events (request_id, payload_sha256, received_at) VALUES (?, ?, ?)").run(requestId, payloadHash, new Date().toISOString());
+  } catch {
+    const prior = db.prepare("SELECT payload_sha256 FROM fal_webhook_events WHERE request_id = ?").get(requestId) as { payload_sha256?: string } | undefined;
+    if (prior?.payload_sha256 !== payloadHash) { res.status(409).json({ message: "Webhook request ID was already used with a different payload." }); return; }
+    res.status(409).json({ message: "Webhook request has already been accepted." });
+    return;
+  }
   res.status(202).json({ accepted: true });
   if (!generationService) return;
-  void generationService.processWebhook(db, payload as Parameters<typeof generationService.processWebhook>[1]).catch(() => undefined);
+  void generationService.processWebhook(db, payload as Parameters<typeof generationService.processWebhook>[1]).then(() => { db.prepare("UPDATE fal_webhook_events SET processed_at = ? WHERE request_id = ?").run(new Date().toISOString(), requestId); }).catch((error) => { console.error("FAL webhook processing failed", redactSensitive({ requestId, error: error instanceof Error ? error.message : "unknown" }, [process.env.FAL_KEY ?? ""])); });
 });
 
 app.use(express.json({ limit: process.env.VISUAL_REFERENCE_JSON_LIMIT ?? "20mb" }));
@@ -93,7 +109,7 @@ app.get("/api/generated-assets/file", async (req, res) => {
   if (!user || !verifyStorageAccessSignature(key, expires, signature)) { res.status(401).json({ message: "Generated asset access is unauthorized." }); return; }
   const asset = getGeneratedAssetByStorageReferenceForUser(db, user.id, key);
   if (!asset) { res.status(404).json({ message: "Generated asset not found." }); return; }
-  try { const bytes = await readPrivateStorageBytes(asset.storageReference); res.setHeader("Cache-Control", "private, max-age=300"); res.type(asset.mimeType).send(bytes); }
+  try { const bytes = await readPrivateStorageBytes(asset.storageReference); res.setHeader("Cache-Control", "private, max-age=300"); res.setHeader("Content-Disposition", `inline; filename="generated-asset-${asset.id}.bin"`); res.setHeader("X-Content-Type-Options", "nosniff"); res.type(asset.mimeType).send(bytes); }
   catch { res.status(404).json({ message: "Generated asset not found." }); }
 });
 
@@ -114,6 +130,8 @@ app.get("/api/reference-assets/file", async (req, res) => {
   try {
     const bytes = await readPrivateStorageBytes(reference.storageKey);
     res.setHeader("Cache-Control", "private, max-age=300");
+    res.setHeader("Content-Disposition", `inline; filename="reference-${reference.id}.bin"`);
+    res.setHeader("X-Content-Type-Options", "nosniff");
     res.type(reference.mimeType).send(bytes);
   } catch {
     res.status(404).json({ message: "Visual reference not found." });

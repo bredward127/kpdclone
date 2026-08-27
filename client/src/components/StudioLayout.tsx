@@ -68,7 +68,7 @@ export function StudioLayout({ children, projectId }: { children: React.ReactNod
           {navItems.map((item) => {
             const href = item.href ?? projectHref(item.suffix!);
             const isActive = href === "/projects" ? !projectId : Boolean(projectId && window.location.pathname === href);
-            return <Link key={item.label} href={href} className={`group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm ${isActive ? "bg-[var(--navy)] font-semibold text-white shadow-[0_8px_22px_rgba(32,51,72,.12)]" : "text-[var(--muted-ink)] hover:bg-[#eeeae0] hover:text-[var(--ink)]"}`}><span className={`mono text-[10px] ${isActive ? "text-[#b7d2c5]" : "text-[#adb5bf]"}`}>{item.icon}</span>{item.label}</Link>;
+            return <Link key={item.label} href={href} aria-current={isActive ? "page" : undefined} className={`group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm ${isActive ? "bg-[var(--navy)] font-semibold text-white shadow-[0_8px_22px_rgba(32,51,72,.12)]" : "text-[var(--muted-ink)] hover:bg-[#eeeae0] hover:text-[var(--ink)]"}`}><span className={`mono text-[10px] ${isActive ? "text-[#b7d2c5]" : "text-[#adb5bf]"}`} aria-hidden="true">{item.icon}</span>{item.label}{isActive ? <span className="sr-only">, current stage</span> : null}</Link>;
           })}
         </nav>
 

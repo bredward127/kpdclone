@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 
 export type AppDatabase = Database.Database;
@@ -15,6 +16,14 @@ export type ProjectRecord = {
   userId: string;
   name: string;
   brief: string;
+  bookType: "picture_book" | "early_reader" | "chapter_book" | "activity_book" | "other";
+  readingDirection: "ltr" | "rtl";
+  trimWidthInches: number;
+  trimHeightInches: number;
+  bleedPreference: "no_bleed" | "bleed" | "custom";
+  paperSelection: string;
+  inkSelection: string;
+  pageCount: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -71,7 +80,9 @@ export function listProjects(db: AppDatabase, userId: string): ProjectRecord[] {
   return db
     .prepare(
       `SELECT id, user_id AS userId, name, brief,
-              created_at AS createdAt, updated_at AS updatedAt
+              book_type AS bookType, reading_direction AS readingDirection, trim_width_inches AS trimWidthInches, trim_height_inches AS trimHeightInches,
+              bleed_preference AS bleedPreference, paper_selection AS paperSelection, ink_selection AS inkSelection,
+              page_count AS pageCount, created_at AS createdAt, updated_at AS updatedAt
        FROM book_projects
        WHERE user_id = ?
        ORDER BY updated_at DESC, created_at DESC`,
@@ -94,7 +105,9 @@ export function getProjectForUser(db: AppDatabase, userId: string, projectId: st
     db
       .prepare(
         `SELECT id, user_id AS userId, name, brief,
-                created_at AS createdAt, updated_at AS updatedAt
+                book_type AS bookType, reading_direction AS readingDirection, trim_width_inches AS trimWidthInches, trim_height_inches AS trimHeightInches,
+                bleed_preference AS bleedPreference, paper_selection AS paperSelection, ink_selection AS inkSelection,
+                page_count AS pageCount, created_at AS createdAt, updated_at AS updatedAt
          FROM book_projects
          WHERE id = ? AND user_id = ?`,
       )
@@ -125,4 +138,28 @@ export function updateProjectForUser(
 export function deleteProjectForUser(db: AppDatabase, userId: string, projectId: string): boolean {
   const result = db.prepare(`DELETE FROM book_projects WHERE id = ? AND user_id = ?`).run(projectId, userId);
   return result.changes === 1;
+}
+
+export function deleteProjectDataForUser(db: AppDatabase, userId: string, projectId: string): { removed: boolean; storageKeys: string[] } {
+  const storageKeys = new Set<string>();
+  const references: Array<[string, string]> = [
+    ["reference_assets", "storage_key"], ["generated_assets", "storage_reference"], ["cover_template_imports", "guide_storage_reference"],
+    ["interior_export_runs", "interior_pdf_storage_reference"], ["interior_export_runs", "preview_pdf_storage_reference"], ["interior_export_runs", "layout_manifest_storage_reference"], ["interior_export_runs", "preflight_report_storage_reference"],
+    ["cover_export_runs", "cover_storage_reference"], ["cover_export_runs", "preview_storage_reference"], ["kdp_preflight_runs", "report_json_storage_reference"], ["kdp_preflight_runs", "report_html_storage_reference"], ["kdp_preflight_runs", "report_pdf_storage_reference"],
+    ["export_packages", "zip_storage_reference"], ["export_packages", "listing_metadata_storage_reference"], ["export_packages", "readme_storage_reference"], ["export_packages", "cover_preview_storage_reference"], ["export_packages", "manifest_storage_reference"], ["export_packages", "preflight_storage_reference"],
+  ];
+  for (const [table, column] of references) {
+    try { for (const row of db.prepare(`SELECT ${column} AS value FROM ${table} WHERE user_id = ? AND project_id = ? AND ${column} IS NOT NULL`).all(userId, projectId) as Array<{ value: unknown }>) if (typeof row.value === "string" && row.value) storageKeys.add(row.value); } catch { /* table/column may not exist in older deployments */ }
+  }
+  const deletedAt = new Date().toISOString();
+  const auditId = crypto.randomUUID();
+  const userHash = crypto.createHash("sha256").update(userId).digest("hex");
+  const projectHash = crypto.createHash("sha256").update(projectId).digest("hex");
+  const transaction = db.transaction(() => {
+    const result = db.prepare(`DELETE FROM book_projects WHERE id = ? AND user_id = ?`).run(projectId, userId);
+    if (result.changes !== 1) return false;
+    db.prepare(`INSERT INTO security_deletion_audit (id, user_hash, project_hash, deleted_at, deleted_storage_count) VALUES (?, ?, ?, ?, ?)`).run(auditId, userHash, projectHash, deletedAt, storageKeys.size);
+    return true;
+  });
+  return { removed: Boolean(transaction()), storageKeys: [...storageKeys] };
 }

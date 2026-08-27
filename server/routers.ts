@@ -14,7 +14,15 @@ import { composePromptFromSavedProject, createPromptVersion, freezePromptVersion
 import { createFalGenerationService, type FalGenerationService } from "./fal-generation";
 import { getFalQueueClient } from "./fal-queue";
 import { falModelRegistry, listSelectableFalModels } from "./fal-models";
-import { createProject, deleteProjectForUser, getProjectForUser, listProjects, updateProjectForUser, upsertUser, type AppDatabase, type UserRecord } from "./db";
+import { getQualityResultForAsset } from "./asset-quality";
+import { createCoverPlanVersion, coverArtPrompt, getLatestCoverPlan, importCoverTemplate, invalidateCoverPlansForInteriorChange, listCoverTemplates, makeInteriorFingerprint, type CoverPlanInput } from "./cover-desk";
+import { assembleInteriorExport, type InteriorFont, type InteriorPageType } from "./interior-pdf";
+import { composeCoverExport, type CoverFont } from "./cover-composer";
+import { activateKdpRuleset, createKdpRulesetDraft, DEFAULT_KDP_RULESET, DEFAULT_KDP_SOURCE_URLS, listKdpRulesets, persistPaperbackPreflight, type KdpRulesetConfig, type PaperbackPreflightInput } from "./kdp-preflight";
+import { computeFrozenProjectVersion, createFinalExport, type FinalExportInput } from "./export-center";
+import { addProvenanceEntry, assertPublishingReadyForExport, classifyContentPolicy, createPublishingMetadataVersion, finalizePublishingMetadataVersion, listProvenance, recordContentPolicyReview, type PublishingMetadataInput, type ProvenanceInput } from "./publishing";
+import { createProject, deleteProjectDataForUser, getProjectForUser, listProjects, updateProjectForUser, upsertUser, type AppDatabase, type UserRecord } from "./db";
+import { createRateLimiter } from "./security";
 
 export type AppContext = {
   db: AppDatabase;
@@ -46,6 +54,14 @@ const projectInput = z.object({
   name: z.string().trim().min(1).max(120),
   brief: z.string().trim().max(5000).default(""),
 });
+const kdpPageInput = z.object({ pageNumber: z.number().int().positive(), blank: z.boolean(), assetId: z.string().optional(), effectiveDpi: z.number().optional(), textFontIds: z.array(z.string()).default([]) });
+const kdpPreflightInput = z.object({ projectId: z.string().min(1), trimWidthInches: z.number().positive(), trimHeightInches: z.number().positive(), bleed: z.boolean(), interiorPageCount: z.number().int().positive(), readingDirection: z.enum(["ltr", "rtl"]), interior: z.object({ pdfBytesBase64: z.string().min(1).max(900_000_000), widthInches: z.number().positive(), heightInches: z.number().positive(), pageCount: z.number().int().positive(), pages: z.array(kdpPageInput), fontsEmbedded: z.array(z.string()), manifestRulesetVersion: z.string().optional(), manifestReadingDirection: z.enum(["ltr", "rtl"]).optional(), measuredOutsideMarginInches: z.number().nonnegative(), measuredGutterMarginInches: z.number().nonnegative() }), cover: z.object({ pdfBytesBase64: z.string().min(1).max(900_000_000), pageCount: z.number().int().positive(), widthInches: z.number().positive(), heightInches: z.number().positive(), expectedWidthInches: z.number().positive(), expectedHeightInches: z.number().positive(), templateCurrent: z.boolean(), templateSourceUrl: z.string().url().optional(), templateFingerprintMatches: z.boolean(), safeZoneWarnings: z.array(z.string()), bleedCovered: z.boolean(), barcodeClear: z.boolean(), spineEligible: z.boolean(), spineTextInsideSafeZone: z.boolean(), flattened: z.boolean(), hasGuideContent: z.boolean(), sourceAssetIds: z.array(z.string()) }), expectedInteriorWidthInches: z.number().positive(), expectedInteriorHeightInches: z.number().positive(), permittedFontIds: z.array(z.string()) });
+const finalExportInput = z.object({ projectId: z.string().min(1), validationRunId: z.string().min(1), interiorExportRunId: z.string().min(1), coverExportRunId: z.string().min(1), frozenProjectVersion: z.string().regex(/^[a-f0-9]{64}$/), confirmFinalProjectVersion: z.literal(true), listingMetadata: z.object({ title: z.string().min(1).max(500), subtitle: z.string().max(500).optional(), author: z.string().min(1).max(500), description: z.string().max(20_000).optional(), keywords: z.string().max(2_000).optional(), categories: z.string().max(2_000).optional(), language: z.string().max(80).optional() }), approvedSourceImageIds: z.array(z.string().min(1)).max(500).default([]), retentionDays: z.number().int().min(1).max(3650).optional() });
+const publishingMetadataInput = z.object({ title: z.string().trim().min(1).max(500), subtitle: z.string().max(500).optional(), seriesName: z.string().max(500).optional(), seriesNumber: z.string().max(40).optional(), edition: z.string().max(200).optional(), contributors: z.array(z.object({ name: z.string().trim().min(1).max(300), role: z.string().trim().min(1).max(80) })).max(50).default([]), language: z.string().trim().min(2).max(80), description: z.string().max(20_000).optional(), keywordPhrases: z.array(z.string().trim().min(1).max(200)).length(7), categories: z.array(z.string().trim().min(1).max(300)).max(20).default([]), audience: z.record(z.string(), z.unknown()).default({}), readingDirection: z.enum(["ltr", "rtl"]), printSettings: z.record(z.string(), z.unknown()).default({}), rightsOwner: z.string().trim().min(1).max(500), imprint: z.string().max(100).optional(), isbn13: z.string().regex(/^(97[89])\d{10}$/).optional(), isbn10: z.string().regex(/^\d{9}[\dX]$/).optional(), isbnSource: z.enum(["kdp_free", "owned"]).optional(), aiDisclosureConfirmed: z.boolean(), rightsAttestationConfirmed: z.literal(true), aiDisclosureRequired: z.boolean().optional() });
+const provenanceInput = z.object({ elementType: z.enum(["text", "image", "translation", "layout"]), elementKey: z.string().min(1).max(300), classification: z.enum(["ai_generated", "ai_assisted", "user_authored", "licensed_upload"]), sourceAssetId: z.string().optional(), modelEndpoint: z.string().max(500).optional(), promptVersionId: z.string().optional(), outputTimestamp: z.string().datetime().optional(), ownerApproval: z.boolean(), rightsAttestation: z.boolean(), notes: z.string().max(5000).optional() });
+const interiorPageInput = z.object({
+  id: z.string().min(1), pageNumber: z.number().int().positive(), pageType: z.enum(["front_matter", "dedication", "copyright", "storybook_text_spread", "coloring_page", "activity_page", "intentional_blank", "end_matter"]), assetId: z.string().min(1).optional(), assetVersion: z.string().max(200).optional(), assetChecksumSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(), textBlocks: z.array(z.object({ id: z.string().min(1), text: z.string().max(20_000), x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive(), fontSize: z.number().positive(), fontId: z.string().optional(), align: z.enum(["left", "center", "right"]).optional() })).max(40).default([]), imagePlacement: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive(), fit: z.enum(["contain", "cover"]).optional() }).optional(), intentionallyBlank: z.boolean().optional(), layoutId: z.string().max(200).optional(),
+});
 
 export function createAppRouter(
   db: AppDatabase,
@@ -60,6 +76,11 @@ export function createAppRouter(
   const storage = options.storage ?? createLocalPrivateStorage();
   const generationService = "generationService" in options ? options.generationService : (process.env.NODE_ENV === "test" ? undefined : createFalGenerationService({ adapter: getFalQueueClient(), storage, webhookUrl: process.env.FAL_WEBHOOK_URL }));
   const referenceLimits = getReferenceValidationLimits();
+  const submitLimiter = createRateLimiter(60_000, 12);
+  const uploadLimiter = createRateLimiter(60_000, 20);
+  const exportLimiter = createRateLimiter(60_000, 6);
+  const policyLimiter = createRateLimiter(60_000, 30);
+  const enforceLimit = (limiter: ReturnType<typeof createRateLimiter>, userId: string, action: string) => { const result = limiter(`${action}:${userId}`); if (!result.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: `Too many ${action} requests. Retry in ${result.retryAfterSeconds} seconds.` }); };
 
   return router({
     auth: router({
@@ -84,6 +105,20 @@ export function createAppRouter(
       }),
     }),
     studio: router({
+      publishing: router({
+        metadata: router({
+          createVersion: protectedProcedure.input(projectIdInput.extend(publishingMetadataInput.shape)).mutation(({ ctx, input }) => { enforceLimit(policyLimiter, ctx.user.id, "publishing metadata"); return createPublishingMetadataVersion(db, ctx.user.id, input.projectId, input as PublishingMetadataInput); }),
+          finalize: protectedProcedure.input(projectIdInput.extend({ metadataVersionId: z.string().min(1) })).mutation(({ ctx, input }) => { try { finalizePublishingMetadataVersion(db, ctx.user.id, input.projectId, input.metadataVersionId); return { ok: true }; } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Publishing metadata could not be finalized." }); } }),
+        }),
+        provenance: router({
+          list: protectedProcedure.input(projectIdInput).query(({ ctx, input }) => listProvenance(db, ctx.user.id, input.projectId)),
+          add: protectedProcedure.input(projectIdInput.extend(provenanceInput.shape).extend({ metadataVersionId: z.string().optional() })).mutation(({ ctx, input }) => { try { return { id: addProvenanceEntry(db, ctx.user.id, input.projectId, input.metadataVersionId, input as ProvenanceInput) }; } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Provenance entry could not be saved." }); } }),
+        }),
+        policy: router({
+          evaluate: protectedProcedure.input(projectIdInput.extend({ text: z.string().max(100_000) })).query(({ input }) => classifyContentPolicy(input.text)),
+          review: protectedProcedure.input(projectIdInput.extend({ subjectType: z.enum(["prompt", "metadata", "export"]), subjectId: z.string().min(1), text: z.string().max(100_000), rightsAttestation: z.boolean() })).mutation(({ ctx, input }) => { enforceLimit(policyLimiter, ctx.user.id, "policy review"); return recordContentPolicyReview(db, ctx.user.id, input.projectId, input.subjectType, input.subjectId, input.text, input.rightsAttestation); }),
+        }),
+      }),
       brief: router({
         get: protectedProcedure.input(projectIdInput).query(({ ctx, input }) => {
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) {
@@ -189,7 +224,7 @@ export function createAppRouter(
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
           const jobs = listGenerationJobsForUser(db, ctx.user.id, input.projectId, input.pagePlanId);
           const assets = input.pagePlanId ? listGeneratedAssetsForPage(db, ctx.user.id, input.projectId, input.pagePlanId) : [];
-          const assetsWithAccess = await Promise.all(assets.map(async (asset) => ({ ...asset, accessUrl: await storage.createAccessUrl(asset.storageReference, 900) })));
+          const assetsWithAccess = await Promise.all(assets.map(async (asset) => ({ ...asset, accessUrl: await storage.createAccessUrl(asset.storageReference, 900), quality: getQualityResultForAsset(db, ctx.user.id, asset.id, "generated") })));
           return { jobs, assets: assetsWithAccess, variants: assets.flatMap((asset) => listAssetVariantsForUser(db, ctx.user.id, input.projectId, asset.id)) };
         }),
         models: protectedProcedure.query(() => listSelectableFalModels()),
@@ -208,6 +243,7 @@ export function createAppRouter(
           generationModel: z.string().min(1).max(200), generationEndpoint: z.string().min(1).max(300), aspectRatio: z.string().regex(/^\\d+:\\d+$/), seed: z.number().int().optional(), referenceAssetIds: z.array(z.string().min(1)).max(24), expectedOutputConstraints: z.record(z.string(), z.unknown()).default({}), idempotencyKey: z.string().min(8).max(200).optional(), requestKind: z.enum(["initial", "variation", "prompt_edit"]).default("initial"), sourceAssetId: z.string().min(1).optional(),
         })).mutation(async ({ ctx, input }) => {
           if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
+          enforceLimit(submitLimiter, ctx.user.id, "generation");
           try { return await generationService.submit(db, ctx.user.id, input); }
           catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Generation could not be submitted safely." }); }
         }),
@@ -231,6 +267,7 @@ export function createAppRouter(
           requests: z.array(z.object({ pagePlanId: z.string().min(1), promptVersionId: z.string().min(1), generationModel: z.string().min(1).max(200), generationEndpoint: z.string().min(1).max(300), aspectRatio: z.string().regex(/^\\d+:\\d+$/), seed: z.number().int().optional(), referenceAssetIds: z.array(z.string().min(1)).max(24), expectedOutputConstraints: z.record(z.string(), z.unknown()).default({}), idempotencyKey: z.string().min(8).max(200) })).min(2).max(3),
         })).mutation(async ({ ctx, input }) => {
           if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
+          enforceLimit(submitLimiter, ctx.user.id, "generation queue");
           if (input.requests.length !== input.count) throw new TRPCError({ code: "BAD_REQUEST", message: "The confirmed queue count does not match the pending page selection." });
           try {
             const jobs = [] as Array<Awaited<ReturnType<typeof generationService.submit>>>;
@@ -282,7 +319,36 @@ export function createAppRouter(
       cover: router({
         get: protectedProcedure.input(projectIdInput).query(({ ctx, input }) => {
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
-          return getCoverPlanForUser(db, ctx.user.id, input.projectId);
+          return getLatestCoverPlan(db, ctx.user.id, input.projectId) ?? getCoverPlanForUser(db, ctx.user.id, input.projectId);
+        }),
+        templates: protectedProcedure.input(projectIdInput).query(({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          return listCoverTemplates(db, ctx.user.id, input.projectId);
+        }),
+        artPrompt: protectedProcedure.input(z.object({ role: z.enum(["front", "back", "decorative"]), brief: z.string().max(2_000).default("") })).query(({ input }) => coverArtPrompt(input.role, input.brief)),
+        save: protectedProcedure.input(projectIdInput.extend({
+          binding: z.literal("paperback"), trimWidthInches: z.number().positive(), trimHeightInches: z.number().positive(), finalInteriorPageCount: z.number().int().positive(), paperSelection: z.string().min(1).max(100), inkSelection: z.string().min(1).max(100), readingDirection: z.enum(["ltr", "rtl"]), title: z.string().max(500), subtitle: z.string().max(500).default(""), author: z.string().max(500), imprint: z.string().max(500).default(""), backCoverCopy: z.string().max(10_000).default(""), barcodeDecision: z.enum(["amazon_placed", "creator_supplied"]), spineTextPermitted: z.boolean(), frontArtAssetId: z.string().min(1).optional(), backArtAssetId: z.string().min(1).optional(), decorativeAssetIds: z.array(z.string().min(1)).max(24).default([]), placement: z.record(z.string(), z.unknown()).default({}), templateImportId: z.string().min(1).optional(), inputsConfirmed: z.boolean().default(false),
+        })).mutation(({ ctx, input }) => {
+          try { return createCoverPlanVersion(db, ctx.user.id, input.projectId, input as CoverPlanInput); }
+          catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Cover plan could not be saved." }); }
+        }),
+        importTemplate: protectedProcedure.input(projectIdInput.extend({
+          sourceUrl: z.string().url(), retrievedAt: z.string().datetime(), calculatorInputs: z.record(z.string(), z.unknown()), finalInteriorPageCount: z.number().int().positive(), guideMimeType: z.enum(["application/pdf", "image/png"]), guideBytesBase64: z.string().min(1).max(50_000_000), fullCoverWidthInches: z.number().positive(), fullCoverHeightInches: z.number().positive(), bounds: z.record(z.string(), z.unknown()), safeZones: z.record(z.string(), z.unknown()), bleedZones: z.record(z.string(), z.unknown()), barcodeMargin: z.record(z.string(), z.unknown()), spineSafeZone: z.record(z.string(), z.unknown()),
+        })).mutation(async ({ ctx, input }) => {
+          let guideBytes: Buffer;
+          try { guideBytes = Buffer.from(input.guideBytesBase64, "base64"); } catch { throw new TRPCError({ code: "BAD_REQUEST", message: "Template guide encoding is invalid." }); }
+          try {
+            const project = getProjectForUser(db, ctx.user.id, input.projectId);
+            if (!project) throw new Error("Project not found.");
+            return await importCoverTemplate(db, storage, ctx.user.id, input.projectId, { ...input, guideBytes, interiorFingerprint: makeInteriorFingerprint(project, input.finalInteriorPageCount) });
+          }
+          catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Template import failed." }); }
+        }),
+        invalidate: protectedProcedure.input(projectIdInput.extend({ finalInteriorPageCount: z.number().int().positive() })).mutation(({ ctx, input }) => {
+          const project = getProjectForUser(db, ctx.user.id, input.projectId);
+          if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          const fingerprint = makeInteriorFingerprint(project, input.finalInteriorPageCount);
+          return { invalidatedCount: invalidateCoverPlansForInteriorChange(db, ctx.user.id, input.projectId, fingerprint), interiorFingerprint: fingerprint };
         }),
       }),
       layout: router({
@@ -293,6 +359,18 @@ export function createAppRouter(
         }),
       }),
       validation: router({
+        rulesets: router({
+          list: protectedProcedure.query(({ ctx }) => listKdpRulesets(db, ctx.user.id, falAdminEnv)),
+          createDraft: protectedProcedure.input(z.object({ version: z.string().min(1).max(80), effectiveDate: z.string().date(), config: z.record(z.string(), z.unknown()), sourceUrls: z.array(z.string().url()).min(1), reviewNotes: z.string().max(5000).optional() })).mutation(({ ctx, input }) => createKdpRulesetDraft(db, ctx.user.id, falAdminEnv, { ...input, config: input.config as unknown as KdpRulesetConfig })),
+          activate: protectedProcedure.input(z.object({ id: z.string().min(1), reviewNotes: z.string().max(5000).optional() })).mutation(({ ctx, input }) => activateKdpRuleset(db, ctx.user.id, falAdminEnv, input.id, input.reviewNotes)),
+          defaultConfig: protectedProcedure.query(({ ctx }) => { if (!isFalAdministrator(ctx.user.id, falAdminEnv)) throw new TRPCError({ code: "FORBIDDEN", message: "KDP ruleset administration is restricted to administrators." }); return { config: DEFAULT_KDP_RULESET, sourceUrls: DEFAULT_KDP_SOURCE_URLS }; }),
+        }),
+        run: protectedProcedure.input(kdpPreflightInput).mutation(async ({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          const reportInput: PaperbackPreflightInput = { ...input, interior: { ...input.interior, pdfBytes: Buffer.from(input.interior.pdfBytesBase64, "base64") }, cover: { ...input.cover, pdfBytes: Buffer.from(input.cover.pdfBytesBase64, "base64") } };
+          try { return await persistPaperbackPreflight(db, storage, ctx.user.id, reportInput); } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "KDP preflight could not be completed." }); }
+        }),
+        latestPreflight: protectedProcedure.input(projectIdInput).query(async ({ ctx, input }) => { if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." }); const run = db.prepare(`SELECT r.*, k.version AS ruleset_version FROM kdp_preflight_runs r JOIN kdp_rulesets k ON k.id = r.ruleset_id WHERE r.user_id = ? AND r.project_id = ? ORDER BY r.created_at DESC LIMIT 1`).get(ctx.user.id, input.projectId) as Record<string, unknown> | undefined; if (!run) return null; return { id: String(run.id), status: String(run.status), rulesetVersion: String(run.ruleset_version), blockingIssueCount: Number(run.blocking_issue_count), warningCount: Number(run.warning_count), informationalCount: Number(run.informational_count), jsonAccessUrl: await storage.createAccessUrl(String(run.report_json_storage_reference), 900), htmlAccessUrl: await storage.createAccessUrl(String(run.report_html_storage_reference), 900), pdfAccessUrl: await storage.createAccessUrl(String(run.report_pdf_storage_reference), 900) }; }),
         latest: protectedProcedure.input(projectIdInput).query(({ ctx, input }) => {
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
           return getLatestValidationRun(db, ctx.user.id, input.projectId);
@@ -302,6 +380,41 @@ export function createAppRouter(
         list: protectedProcedure.input(projectIdInput).query(({ ctx, input }) => {
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
           return listExportPackages(db, ctx.user.id, input.projectId);
+        }),
+        createInterior: protectedProcedure.input(projectIdInput.extend({
+          trimWidthInches: z.number().positive(), trimHeightInches: z.number().positive(), bleed: z.boolean(), pageCount: z.number().int().positive(), paperSelection: z.string().min(1).max(100), inkSelection: z.string().min(1).max(100), readingDirection: z.enum(["ltr", "rtl"]), autoPadOddPageCount: z.boolean().optional(), pages: z.array(interiorPageInput).min(1), fonts: z.array(z.object({ id: z.string().min(1), family: z.string().min(1).max(200), bytesBase64: z.string().min(1).max(20_000_000), permitted: z.boolean() })).max(8).default([]),
+        })).mutation(async ({ ctx, input }) => {
+          enforceLimit(exportLimiter, ctx.user.id, "interior export");
+          try {
+            const fonts: InteriorFont[] = input.fonts.map((font) => ({ id: font.id, family: font.family, bytes: Buffer.from(font.bytesBase64, "base64"), permitted: font.permitted }));
+            return await assembleInteriorExport(db, storage, ctx.user.id, { ...input, fonts, pages: input.pages as Array<{ id: string; pageNumber: number; pageType: InteriorPageType; assetId?: string; assetVersion?: string; assetChecksumSha256?: string; textBlocks?: never[] }> });
+          } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Interior export could not be assembled." }); }
+        }),
+        createCover: protectedProcedure.input(projectIdInput.extend({
+          planVersionId: z.string().min(1), templateImportId: z.string().min(1), frontArtPlacement: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }).optional(), backArtPlacement: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }).optional(), spineTextPlacement: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }).optional(), barcodePlacement: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }).optional(), fonts: z.array(z.object({ id: z.string().min(1), family: z.string().min(1).max(200), bytesBase64: z.string().min(1).max(20_000_000), permitted: z.boolean() })).max(8).default([]),
+        })).mutation(async ({ ctx, input }) => {
+          enforceLimit(exportLimiter, ctx.user.id, "cover export");
+          try { const fonts: CoverFont[] = input.fonts.map((font) => ({ id: font.id, family: font.family, bytes: Buffer.from(font.bytesBase64, "base64"), permitted: font.permitted })); return await composeCoverExport(db, storage, ctx.user.id, input.projectId, { ...input, fonts }); }
+          catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Full-wrap cover export could not be composed." }); }
+        }),
+        createFinalPackage: protectedProcedure.input(finalExportInput).mutation(async ({ ctx, input }) => { enforceLimit(exportLimiter, ctx.user.id, "final export"); try { return await createFinalExport(db, storage, ctx.user.id, input as FinalExportInput); } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Final export could not be created." }); } }),
+        listFinalPackages: protectedProcedure.input(projectIdInput).query(async ({ ctx, input }) => { if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." }); const rows = db.prepare(`SELECT id, frozen_project_version AS frozenProjectVersion, COALESCE(kdp_preflight_run_id, validation_run_id) AS validationRunId, status, artifact_hashes_json AS artifactHashesJson, expires_at AS expiresAt, retention_status AS retentionStatus, created_at AS createdAt, zip_storage_reference AS zipReference FROM export_packages WHERE user_id = ? AND project_id = ? ORDER BY created_at DESC`).all(ctx.user.id, input.projectId) as Array<Record<string, unknown>>; return Promise.all(rows.map(async (row) => ({ id: String(row.id), frozenProjectVersion: String(row.frozenProjectVersion ?? ""), validationRunId: String(row.validationRunId ?? ""), status: String(row.status), artifactHashes: JSON.parse(String(row.artifactHashesJson ?? "{}")), expiresAt: row.expiresAt ? String(row.expiresAt) : null, retentionStatus: String(row.retentionStatus), createdAt: String(row.createdAt), zipAccessUrl: row.zipReference && row.retentionStatus !== "expired" && (!row.expiresAt || new Date(String(row.expiresAt)).getTime() > Date.now()) ? await storage.createAccessUrl(String(row.zipReference), 900) : null }))); }),
+        latestInterior: protectedProcedure.input(projectIdInput).query(async ({ ctx, input }) => {
+          const run = db.prepare(`SELECT * FROM interior_export_runs WHERE user_id = ? AND project_id = ? ORDER BY created_at DESC LIMIT 1`).get(ctx.user.id, input.projectId) as Record<string, unknown> | undefined;
+          if (!run) return null;
+          return { id: String(run.id), status: String(run.status), pageCount: Number(run.page_count), blockingIssueCount: Number(run.blocking_issue_count), warningCount: Number(run.warning_count), finalPdfAccessUrl: run.interior_pdf_storage_reference ? await storage.createAccessUrl(String(run.interior_pdf_storage_reference), 900) : null, previewPdfAccessUrl: await storage.createAccessUrl(String(run.preview_pdf_storage_reference), 900), manifestAccessUrl: await storage.createAccessUrl(String(run.layout_manifest_storage_reference), 900), preflightAccessUrl: await storage.createAccessUrl(String(run.preflight_report_storage_reference), 900) };
+        }),
+      }),
+      quality: router({
+        generated: protectedProcedure.input(z.object({ assetId: z.string().min(1) })).query(({ ctx, input }) => {
+          const asset = getGeneratedAssetForUser(db, ctx.user.id, input.assetId);
+          if (!asset) throw new TRPCError({ code: "NOT_FOUND", message: "Generated asset not found." });
+          return getQualityResultForAsset(db, ctx.user.id, input.assetId, "generated");
+        }),
+        reference: protectedProcedure.input(z.object({ referenceId: z.string().min(1) })).query(({ ctx, input }) => {
+          const reference = getReferenceAssetForUser(db, ctx.user.id, input.referenceId);
+          if (!reference) throw new TRPCError({ code: "NOT_FOUND", message: "Reference asset not found." });
+          return getQualityResultForAsset(db, ctx.user.id, input.referenceId, "reference");
         }),
       }),
       audit: router({
@@ -315,9 +428,9 @@ export function createAppRouter(
       list: protectedProcedure.input(projectIdInput).query(async ({ ctx, input }) => {
         if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
         const references = listReferenceAssets(db, ctx.user.id, input.projectId);
-        return Promise.all(references.map(async (reference) => {
+          return Promise.all(references.map(async (reference) => {
           const { storageKey: _storageKey, ...safeReference } = reference;
-          return { ...safeReference, accessUrl: await storage.createAccessUrl(reference.storageKey, 15 * 60) };
+          return { ...safeReference, accessUrl: await storage.createAccessUrl(reference.storageKey, 15 * 60), quality: getQualityResultForAsset(db, ctx.user.id, reference.id, "reference") };
         }));
       }),
       upload: protectedProcedure.input(z.object({
@@ -331,6 +444,7 @@ export function createAppRouter(
         bytesBase64: z.string().min(1).max(14_000_000),
         replacesId: z.string().min(1).optional(),
       })).mutation(async ({ ctx, input }) => {
+        enforceLimit(uploadLimiter, ctx.user.id, "upload");
         let bytes: Buffer;
         try {
           if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input.bytesBase64) || input.bytesBase64.length % 4 === 1) throw new Error("invalid encoding");
@@ -408,12 +522,13 @@ export function createAppRouter(
           }
           return project;
         }),
-      remove: protectedProcedure.input(projectIdInput).mutation(({ ctx, input }) => {
-        const removed = deleteProjectForUser(db, ctx.user.id, input.projectId);
-        if (!removed) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
-        }
-        return { ok: true };
+      remove: protectedProcedure.input(projectIdInput).mutation(async ({ ctx, input }) => {
+        const result = deleteProjectDataForUser(db, ctx.user.id, input.projectId);
+        if (!result.removed) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+        const outcomes = await Promise.allSettled(result.storageKeys.map((key) => storage.delete(key)));
+        const failedStorageDeletes = outcomes.filter((outcome) => outcome.status === "rejected").length;
+        if (failedStorageDeletes) console.error("Project private-storage cleanup incomplete", { projectId: "[REDACTED]", failedStorageDeletes });
+        return { ok: true, storageCleanup: failedStorageDeletes === 0 ? "complete" : "retention_retry_required" };
       }),
     }),
   });

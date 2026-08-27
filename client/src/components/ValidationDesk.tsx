@@ -1,0 +1,22 @@
+import { ExternalLink, ShieldCheck, ShieldAlert, Clock3 } from "lucide-react";
+import type { ReactNode } from "react";
+import { trpc } from "../lib/trpc";
+
+type ValidationDeskProps = { projectId: string };
+
+export function ValidationDesk({ projectId }: ValidationDeskProps) {
+  const latest = trpc.studio.validation.latestPreflight.useQuery({ projectId });
+  const rulesets = trpc.studio.validation.rulesets.list.useQuery(undefined, { retry: false });
+  const run = latest.data;
+  const ready = run?.status === "ready_for_manual_review";
+  return <div className="space-y-6">
+    <section className="rounded-3xl border border-[#c7d0d0] bg-[#fbfaf4] p-6 shadow-[0_8px_30px_rgba(24,43,58,0.08)]">
+      <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.22em] text-[#9c6b45]">06 / Validation</p><h2 className="mt-2 text-3xl font-semibold text-[var(--navy)]">Make it ready to leave.</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-[#52636c]">Versioned preflight checks cover geometry, pagination, approvals, fonts, bleed, safe zones, barcode clearance, provenance, and file limits.</p></div><div className={`rounded-full px-4 py-2 text-xs font-bold uppercase tracking-[0.12em] ${ready ? "bg-[#dceee6] text-[#356b63]" : "bg-[#f9e2dc] text-[#9c2f27]"}`}>{ready ? "Manual review ready" : run ? "Blocked" : "Not run"}</div></div>
+      {run ? <><div className="mt-6 grid gap-3 sm:grid-cols-4"><Metric label="Ruleset" value={run.rulesetVersion} icon={<Clock3 size={16} />} /><Metric label="Blocking" value={String(run.blockingIssueCount)} icon={<ShieldAlert size={16} />} danger={run.blockingIssueCount > 0} /><Metric label="Warnings" value={String(run.warningCount)} icon={<ShieldAlert size={16} />} /><Metric label="Info" value={String(run.informationalCount)} icon={<ShieldCheck size={16} />} /></div><div className="mt-5 flex flex-wrap gap-3"><ReportLink href={run.htmlAccessUrl} label="Readable HTML" /><ReportLink href={run.pdfAccessUrl} label="Readable PDF" /><ReportLink href={run.jsonAccessUrl} label="Traceable JSON" /></div></> : <p className="mt-6 rounded-2xl border border-dashed border-[#b8c5c5] p-5 text-sm text-[#52636c]">No package preflight has been recorded for this project yet. The export service will create the report after receiving the finalized interior and cover artifacts.</p>}
+    </section>
+    <section className="rounded-3xl border border-[#d5d0c2] bg-[#f2efe4] p-6"><div className="flex items-center justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.18em] text-[#9c6b45]">Rules ledger</p><h3 className="mt-1 text-xl font-semibold text-[var(--navy)]">Administrator-reviewed KDP rulesets</h3></div><span className="rounded-full bg-white/70 px-3 py-1 text-xs text-[#52636c]">{rulesets.data?.length ?? 0} recorded</span></div>{rulesets.isError ? <p className="mt-4 text-sm text-[#52636c]">Administrator review controls are available only to authorized operators.</p> : <div className="mt-4 space-y-2">{rulesets.data?.slice(0, 5).map((item) => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white/70 px-4 py-3 text-sm"><span className="font-semibold text-[var(--navy)]">{item.version}</span><span className="text-[#52636c]">Effective {item.effectiveDate}</span><span className="rounded-full bg-[#e7eee9] px-2 py-1 text-xs font-semibold text-[#356b63]">{item.status}</span></div>)}</div>}</section>
+    <p className="text-xs leading-5 text-[#68777d]">Preflight is an engineering aid, not a submission or acceptance guarantee. Always use KDP Print Previewer and complete manual KDP review before upload.</p>
+  </div>;
+}
+function Metric({ label, value, icon, danger = false }: { label: string; value: string; icon: ReactNode; danger?: boolean }) { return <div className="rounded-2xl border border-[#d5d0c2] bg-white/70 p-4"><div className="flex items-center gap-2 text-xs uppercase tracking-[0.12em] text-[#68777d]">{icon}{label}</div><p className={`mt-2 text-2xl font-semibold ${danger ? "text-[#9c2f27]" : "text-[var(--navy)]"}`}>{value}</p></div>; }
+function ReportLink({ href, label }: { href: string; label: string }) { return <a className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-4 py-2 text-xs font-semibold text-white hover:bg-[#2d465f]" href={href} target="_blank" rel="noreferrer">{label}<ExternalLink size={14} /></a>; }

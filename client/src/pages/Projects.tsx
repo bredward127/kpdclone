@@ -3,6 +3,7 @@ import { ArrowUpRight, FolderPlus, Plus, Trash2 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
+import ConfirmDialog from "@/components/ConfirmDialog";
 
 export default function Projects() {
   const [, setLocation] = useLocation();
@@ -11,6 +12,7 @@ export default function Projects() {
   const [name, setName] = useState("");
   const [brief, setBrief] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  const [projectToDelete, setProjectToDelete] = useState<{ id: string; name: string } | null>(null);
   const createProject = trpc.project.create.useMutation({
     onSuccess: async (project) => {
       setName("");
@@ -35,6 +37,7 @@ export default function Projects() {
   const projectList = projects.data ?? [];
 
   return (
+    <>
     <div className="mx-auto max-w-6xl">
       <header className="mb-10 flex flex-col justify-between gap-6 lg:flex-row lg:items-end">
         <div><p className="mono mb-3 text-[10px] uppercase tracking-[0.24em] text-[var(--coral)]">01 / Project shelf</p><h1 className="serif text-5xl leading-[1.05] text-[var(--ink)] md:text-6xl">Make room for<br /><em className="font-normal text-[var(--coral)]">good stories.</em></h1><p className="mt-5 max-w-xl text-sm leading-6 text-[var(--muted-ink)]">A quiet workspace for turning a spark of a story into a book that is ready for the shelf.</p></div>
@@ -51,9 +54,11 @@ export default function Projects() {
       {projectList.length === 0 ? <EmptyState title="Your shelf is waiting." description="Start with a title and a sentence. Your first book project will live here, safely tied to your creator account." action={<button onClick={() => setIsCreating(true)} className="inline-flex items-center gap-2 rounded-full border border-[var(--navy)] px-4 py-2.5 text-sm font-semibold text-[var(--navy)] hover:bg-[var(--navy)] hover:text-white"><FolderPlus size={16} /> Create your first project</button>} /> : <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {projectList.map((project, index) => <article key={project.id} className="group relative flex min-h-[230px] flex-col justify-between overflow-hidden rounded-[28px] border border-[var(--line)] bg-[var(--paper-strong)] p-6 shadow-[0_14px_40px_rgba(32,51,72,.045)] transition hover:-translate-y-1 hover:shadow-[0_20px_50px_rgba(32,51,72,.10)]">
           <div className="absolute -right-10 -top-14 h-36 w-36 rounded-full bg-[var(--mint)] opacity-55" /><div className="relative"><div className="mb-6 flex items-center justify-between"><span className="mono text-[10px] uppercase tracking-[0.2em] text-[var(--muted-ink)]">Book {String(index + 1).padStart(2, "0")}</span><span className="rounded-full bg-[#f0ece3] px-2.5 py-1 text-[10px] font-semibold text-[var(--muted-ink)]">Draft</span></div><h2 className="serif max-w-[15rem] text-3xl leading-tight text-[var(--ink)]">{project.name}</h2>{project.brief ? <p className="mt-3 line-clamp-2 text-sm leading-5 text-[var(--muted-ink)]">{project.brief}</p> : <p className="mt-3 text-sm italic text-[#9da4ad]">No brief yet. Begin with the story.</p>}</div>
-          <div className="relative flex items-center justify-between pt-7"><Link href={`/projects/${project.id}/book-brief`} className="inline-flex items-center gap-2 text-sm font-semibold text-[var(--coral)] hover:text-[#c95d4d]">Open studio <ArrowUpRight size={16} /></Link><button aria-label={`Delete ${project.name}`} onClick={() => removeProject.mutate({ projectId: project.id })} className="rounded-lg p-2 text-[#b1b2af] hover:bg-[#fff0ec] hover:text-[var(--coral)]"><Trash2 size={15} /></button></div>
+          <div className="relative flex items-center justify-between pt-7"><Link href={`/projects/${project.id}/book-brief`} className="inline-flex items-center gap-2 text-sm font-semibold text-[var(--coral)] hover:text-[#c95d4d]">Open studio <ArrowUpRight size={16} /></Link><button type="button" aria-label={`Delete project ${project.name}`} onClick={() => setProjectToDelete({ id: project.id, name: project.name })} className="rounded-lg p-2 text-[#b1b2af] hover:bg-[#fff0ec] hover:text-[var(--coral)]"><Trash2 size={15} /></button></div>
         </article>)}
       </div>}
     </div>
+      <ConfirmDialog open={Boolean(projectToDelete)} title={`Delete ${projectToDelete?.name ?? "this project"}?`} description="This permanently removes the project and its source materials. This action cannot be undone." confirmLabel="Delete project" onCancel={() => setProjectToDelete(null)} onConfirm={() => { if (projectToDelete) removeProject.mutate({ projectId: projectToDelete.id }); setProjectToDelete(null); }} />
+    </>
   );
 }

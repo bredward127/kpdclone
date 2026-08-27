@@ -3,8 +3,10 @@ import type { AppDatabase } from "./db";
 import { getProjectForUser } from "./db";
 import { getGenerationJobForUser, getGeneratedAssetForUser } from "./db-studio";
 import { getPromptVersionForUser } from "./prompt-composer";
+import { classifyContentPolicy, recordContentPolicyReview } from "./publishing";
 import { getFalModel } from "./fal-models";
 import { validateReferenceImage, getReferenceValidationLimits } from "./reference-validation";
+import { analyzeAssetQuality } from "./asset-quality";
 import type { PrivateStorage } from "./storage";
 import { FalProviderError, type FalImageOutput, type FalQueueStatus, type FalWebhookPayload } from "./fal-queue";
 
@@ -111,6 +113,17 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
         }
         setJob(db, job.userId, job.id, { local_status: "completed", status: "completed", provider_status: providerStatus, provider_completed_at: createdAt, webhook_processed_at: createdAt, error_classification: null, error_code: null, error_message: null });
       })();
+      const project = getProjectForUser(db, job.userId, job.projectId);
+      await analyzeAssetQuality(db, {
+        userId: job.userId,
+        projectId: job.projectId,
+        generatedAssetId: assetId,
+        checksumSha256: validated.contentHashSha256,
+        bytes: downloaded.bytes,
+        declaredMimeType: validated.mimeType,
+        allowAlpha: JSON.parse(job.expectedOutputConstraintsJson ?? "{}").allowAlpha === true,
+        coloringBook: project?.bookType === "activity_book",
+      });
       return { assetId, jobId: job.id, duplicate: false };
     } catch (error) {
       await dependencies.storage.delete(storageKey).catch(() => undefined);
@@ -132,6 +145,11 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
     if (!prompt || prompt.projectId !== input.projectId || prompt.pagePlanId !== input.pagePlanId) throw new Error("Frozen prompt version not found.");
     if (!modelApproval(input.generationEndpoint)) throw new Error("The selected model configuration is not active and administrator-approved.");
     if (prompt.status !== "approved" || !prompt.contentHashSha256 || !prompt.prompt) throw new Error("Prompt version is not frozen and cannot be submitted.");
+    const policyText = `${prompt.prompt}\n${prompt.negativePrompt}`;
+    const policyDecision = classifyContentPolicy(policyText);
+    recordContentPolicyReview(db, userId, input.projectId, "prompt", input.promptVersionId, policyText, false);
+    if (policyDecision.status === "blocked") throw new Error(`Content policy blocked this FAL request: ${policyDecision.reasons.join("; ")}`);
+    if (policyDecision.status === "needs_human_review") throw new Error(`This FAL request needs human review before submission: ${policyDecision.reasons.join("; ")}`);
     if (prompt.generationEndpoint !== input.generationEndpoint || prompt.generationModel !== input.generationModel || prompt.aspectRatio !== input.aspectRatio || (prompt.seed ?? null) !== (input.seed ?? null)) throw new Error("Generation parameters do not match the frozen prompt version.");
     if (input.sourceAssetId) {
       const source = getGeneratedAssetForUser(db, userId, input.sourceAssetId);

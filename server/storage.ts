@@ -1,11 +1,15 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import path from "node:path";
 
 export type PrivateStorage = {
   put: (key: string, bytes: Uint8Array, contentType: string) => Promise<{ key: string }>;
   delete: (key: string) => Promise<void>;
   createAccessUrl: (key: string, expiresInSeconds: number) => Promise<string>;
+  createReadStream?: (key: string) => NodeJS.ReadableStream;
+  putStream?: (key: string, stream: NodeJS.ReadableStream, contentType: string) => Promise<{ key: string }>;
 };
 
 function storageRoot(): string {
@@ -29,6 +33,15 @@ export function createLocalPrivateStorage(): PrivateStorage {
     },
     async delete(key) {
       await fs.rm(safePathForKey(key), { force: true });
+    },
+    createReadStream(key) {
+      return createReadStream(safePathForKey(key));
+    },
+    async putStream(key, stream, _contentType) {
+      const target = safePathForKey(key);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await pipeline(stream, createWriteStream(target));
+      return { key };
     },
     async createAccessUrl(key, expiresInSeconds) {
       const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;

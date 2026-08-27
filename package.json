@@ -11,17 +11,24 @@
     "check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "test:live-fal": "tsx scripts/fal-smoke.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@fontsource/noto-sans": "^5.3.0",
+    "@pdf-lib/fontkit": "^1.1.1",
     "@tanstack/react-query": "^5.90.5",
     "@trpc/client": "^11.6.0",
     "@trpc/react-query": "^11.6.0",
     "@trpc/server": "^11.6.0",
+    "@types/archiver": "^8.0.0",
+    "archiver": "^8.0.0",
     "better-sqlite3": "^12.4.1",
     "cookie": "^1.0.2",
     "express": "^5.1.0",
     "lucide-react": "^0.468.0",
+    "pdf-lib": "^1.17.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "sharp": "^0.35.4",
@@ -29,6 +36,8 @@
     "zod": "^4.1.12"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.5",
@@ -39,7 +48,7 @@
     "esbuild": "^0.25.0",
     "prettier": "^3.6.2",
     "tailwindcss": "^4.3.3",
-    "tsx": "^4.19.2",
+    "tsx": "^4.23.12",
     "typescript": "^5.6.3",
     "vite": "^7.1.7",
     "vitest": "^2.1.8"

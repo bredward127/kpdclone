@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { FileImage, RefreshCw, ShieldCheck, Trash2, UploadCloud, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { EmptyState, ErrorState, LoadingState } from "./States";
+import ConfirmDialog from "./ConfirmDialog";
 
 const kindLabels = {
   character_sheet: "Character sheet",
@@ -33,6 +34,7 @@ export default function VisualReferenceDesk({ projectId }: { projectId: string }
   const [rightsAttestation, setRightsAttestation] = useState(false);
   const [replaceTarget, setReplaceTarget] = useState<string | undefined>();
   const [selectedName, setSelectedName] = useState("");
+  const [referenceToDelete, setReferenceToDelete] = useState<{ id: string; name: string } | null>(null);
   const references = trpc.references.list.useQuery({ projectId });
   const upload = trpc.references.upload.useMutation({
     onSuccess: async () => {
@@ -71,6 +73,7 @@ export default function VisualReferenceDesk({ projectId }: { projectId: string }
   }
 
   return (
+    <>
     <div className="space-y-7">
       <div className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5 shadow-[0_12px_38px_rgba(32,51,72,.05)] md:p-7">
         <div className="flex flex-wrap items-start justify-between gap-5">
@@ -98,8 +101,10 @@ export default function VisualReferenceDesk({ projectId }: { projectId: string }
       {references.isLoading && <LoadingState label="Loading private references" />}
       {references.isError && <ErrorState message="Your visual references could not be loaded." />}
       {references.data && references.data.length === 0 && <EmptyState title="No references on the shelf yet." description="Upload a visual anchor when you are ready. The studio will keep the original bytes private and attach only the declared rights metadata to this project." action={<button type="button" disabled={!rightsAttestation} onClick={chooseFile} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45"><UploadCloud size={16} />Add the first reference</button>} />}
-      {references.data && references.data.length > 0 && <div className="grid gap-4 md:grid-cols-2">{references.data.map((reference) => <article key={reference.id} className="overflow-hidden rounded-[22px] border border-[var(--line)] bg-[var(--paper-strong)]"><div className="grid min-h-[190px] place-items-center bg-[#ece8dd] p-3"><img src={reference.accessUrl} alt={`${kindLabels[reference.referenceKind]} — ${reference.originalFilename}`} className="max-h-52 w-full rounded-xl object-contain" /></div><div className="p-5"><div className="flex items-start justify-between gap-4"><div><p className="mono text-[9px] uppercase tracking-[0.16em] text-[var(--coral)]">{kindLabels[reference.referenceKind]}</p><h3 className="mt-1 truncate text-sm font-semibold text-[var(--ink)]">{reference.originalFilename}</h3></div><FileImage size={18} className="shrink-0 text-[var(--muted-ink)]" /></div><div className="mt-4 grid grid-cols-2 gap-2 text-xs text-[var(--muted-ink)]"><span>{reference.widthPx} × {reference.heightPx}px</span><span>{(reference.byteSize / 1024 / 1024).toFixed(2)} MB</span><span className="col-span-2">{provenanceLabels[reference.provenanceDeclaration]} · rights attested</span></div><div className="mt-5 flex gap-2 border-t border-[var(--line)] pt-4"><button type="button" onClick={() => { setReplaceTarget(reference.id); setKind(reference.referenceKind); setProvenance(reference.provenanceDeclaration); setRightsAttestation(reference.rightsAttestation); chooseFile(); }} className="inline-flex items-center gap-2 rounded-full border border-[var(--line)] px-3 py-2 text-xs font-semibold text-[var(--ink)] hover:bg-[#f4f1e8]"><RefreshCw size={13} />Replace</button><button type="button" disabled={remove.isPending} onClick={() => { if (window.confirm("Delete this private reference?")) void remove.mutateAsync({ referenceId: reference.id }); }} className="inline-flex items-center gap-2 rounded-full border border-[#f0d5cf] px-3 py-2 text-xs font-semibold text-[#a54a3b] hover:bg-[#fff0ed]"><Trash2 size={13} />{remove.isPending ? "Deleting…" : "Delete"}</button></div></div></article>)}</div>}
+      {references.data && references.data.length > 0 && <div className="grid gap-4 md:grid-cols-2">{references.data.map((reference) => <article key={reference.id} className="overflow-hidden rounded-[22px] border border-[var(--line)] bg-[var(--paper-strong)]"><div className="grid min-h-[190px] place-items-center bg-[#ece8dd] p-3"><img src={reference.accessUrl} alt={`${kindLabels[reference.referenceKind]} — ${reference.originalFilename}`} className="max-h-52 w-full rounded-xl object-contain" /></div><div className="p-5"><div className="flex items-start justify-between gap-4"><div><p className="mono text-[9px] uppercase tracking-[0.16em] text-[var(--coral)]">{kindLabels[reference.referenceKind]}</p><h3 className="mt-1 truncate text-sm font-semibold text-[var(--ink)]">{reference.originalFilename}</h3></div><FileImage size={18} className="shrink-0 text-[var(--muted-ink)]" /></div><div className="mt-4 grid grid-cols-2 gap-2 text-xs text-[var(--muted-ink)]"><span>{reference.widthPx} × {reference.heightPx}px</span><span>{(reference.byteSize / 1024 / 1024).toFixed(2)} MB</span><span className="col-span-2">{provenanceLabels[reference.provenanceDeclaration]} · rights attested</span></div><div className="mt-5 flex gap-2 border-t border-[var(--line)] pt-4"><button type="button" onClick={() => { setReplaceTarget(reference.id); setKind(reference.referenceKind); setProvenance(reference.provenanceDeclaration); setRightsAttestation(reference.rightsAttestation); chooseFile(); }} className="inline-flex items-center gap-2 rounded-full border border-[var(--line)] px-3 py-2 text-xs font-semibold text-[var(--ink)] hover:bg-[#f4f1e8]"><RefreshCw size={13} />Replace</button><button type="button" disabled={remove.isPending} onClick={() => setReferenceToDelete({ id: reference.id, name: reference.originalFilename })} className="inline-flex items-center gap-2 rounded-full border border-[#f0d5cf] px-3 py-2 text-xs font-semibold text-[#a54a3b] hover:bg-[#fff0ed]"><Trash2 size={13} />{remove.isPending ? "Deleting…" : "Delete"}</button></div></div></article>)}</div>}
       {remove.isError && <p className="rounded-xl bg-[#fff0ed] px-4 py-3 text-sm text-[#a54a3b]">The private reference could not be deleted safely.</p>}
     </div>
+      <ConfirmDialog open={Boolean(referenceToDelete)} title={`Delete ${referenceToDelete?.name ?? "this reference"}?`} description="This permanently removes the private source reference and its quality record. It cannot be recovered from the studio." confirmLabel="Delete reference" onCancel={() => setReferenceToDelete(null)} onConfirm={() => { if (referenceToDelete) void remove.mutateAsync({ referenceId: referenceToDelete.id }); setReferenceToDelete(null); }} />
+    </>
   );
 }

@@ -3,6 +3,7 @@ import type { AppDatabase } from "./db";
 import { getProjectForUser } from "./db";
 import { getPagePlanForUser } from "./db-studio";
 import { validateReferenceImage, type ReferenceValidationLimits } from "./reference-validation";
+import { analyzeAssetQuality } from "./asset-quality";
 import type { PrivateStorage } from "./storage";
 
 export const referenceKinds = ["character_sheet", "sketch_reference", "moodboard", "cover_reference"] as const;
@@ -191,6 +192,16 @@ export async function uploadReferenceAsset(
       });
       return getReferenceAssetForUser(db, userId, id)!;
     })();
+    await analyzeAssetQuality(db, {
+      userId,
+      projectId: input.projectId,
+      referenceAssetId: id,
+      checksumSha256: validated.contentHashSha256,
+      bytes: input.bytes,
+      declaredMimeType: validated.mimeType,
+      allowAlpha: false,
+      coloringBook: getProjectForUser(db, userId, input.projectId)?.bookType === "activity_book",
+    });
     return reference;
   } catch (error) {
     if (storageAttempted) {
