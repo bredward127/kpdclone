@@ -2,17 +2,61 @@ import express from "express";
 import path from "node:path";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { clearSession, getCurrentUser, isDevAuthEnabled, setSession } from "./auth";
-import { assertFalConfiguredForProduction } from "./fal";
+import { assertFalConfiguredForProduction, assertFalWebhookConfiguredForProduction, loadFalConfig } from "./fal";
+import { verifyFalWebhookSignature } from "./fal-queue";
+import { createFalGenerationService } from "./fal-generation";
+import { getFalQueueClient } from "./fal-queue";
+import { createLocalPrivateStorage } from "./storage";
 import { createDatabase } from "./db";
 import { createAppRouter } from "./routers";
 import { getReferenceAssetByStorageKeyForUser } from "./reference-assets";
 import { readPrivateStorageBytes, verifyStorageAccessSignature } from "./storage";
 
 assertFalConfiguredForProduction();
+assertFalWebhookConfiguredForProduction();
 
 const db = createDatabase();
-const appRouter = createAppRouter(db);
+const storage = createLocalPrivateStorage();
+const falConfig = loadFalConfig();
+const generationService = falConfig ? createFalGenerationService({ adapter: getFalQueueClient(), storage, webhookUrl: process.env.FAL_WEBHOOK_URL }) : undefined;
+const appRouter = createAppRouter(db, { storage, generationService });
 const app = express();
+
+app.post("/api/fal/webhook", express.raw({ type: "application/json", limit: "2mb" }), async (req, res) => {
+  if (process.env.FAL_WEBHOOK_ENABLED !== "true") {
+    res.status(503).json({ message: "FAL webhooks are disabled until webhook verification is enabled." });
+    return;
+  }
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
+  const headers = {
+    "x-fal-webhook-request-id": typeof req.headers["x-fal-webhook-request-id"] === "string" ? req.headers["x-fal-webhook-request-id"] : undefined,
+    "x-fal-webhook-user-id": typeof req.headers["x-fal-webhook-user-id"] === "string" ? req.headers["x-fal-webhook-user-id"] : undefined,
+    "x-fal-webhook-timestamp": typeof req.headers["x-fal-webhook-timestamp"] === "string" ? req.headers["x-fal-webhook-timestamp"] : undefined,
+    "x-fal-webhook-signature": typeof req.headers["x-fal-webhook-signature"] === "string" ? req.headers["x-fal-webhook-signature"] : undefined,
+  };
+  try {
+    const verified = await verifyFalWebhookSignature(rawBody, headers, { jwksUrl: process.env.FAL_WEBHOOK_JWKS_URL });
+    if (!verified) {
+      res.status(401).json({ message: "FAL webhook signature is invalid." });
+      return;
+    }
+  } catch {
+    res.status(503).json({ message: "FAL webhook verification is temporarily unavailable." });
+    return;
+  }
+  let payload: unknown;
+  try { payload = JSON.parse(rawBody.toString("utf8")); } catch {
+    res.status(400).json({ message: "FAL webhook payload is malformed." });
+    return;
+  }
+  if (!payload || typeof payload !== "object" || typeof (payload as Record<string, unknown>).request_id !== "string" || ((payload as Record<string, unknown>).status !== "OK" && (payload as Record<string, unknown>).status !== "ERROR")) {
+    res.status(400).json({ message: "FAL webhook payload is malformed." });
+    return;
+  }
+  res.status(202).json({ accepted: true });
+  if (!generationService) return;
+  void generationService.processWebhook(db, payload as Parameters<typeof generationService.processWebhook>[1]).catch(() => undefined);
+});
 
 app.use(express.json({ limit: process.env.VISUAL_REFERENCE_JSON_LIMIT ?? "20mb" }));
 
@@ -88,4 +132,4 @@ app.listen(port, () => {
   console.log(`KDP Kids Book Studio listening on :${port}`);
 });
 
-export { app, appRouter };
+export { app, appRouter, generationService };

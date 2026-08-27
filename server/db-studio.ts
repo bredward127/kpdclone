@@ -125,15 +125,25 @@ export type GenerationJobRecord = {
   pagePlanId: string | null;
   promptVersionId: string | null;
   providerJobId: string | null;
+  falRequestId: string | null;
   generationModel: string;
   generationEndpoint: string;
   seed: number | null;
   status: LifecycleStatus;
+  localStatus: "draft" | "queued" | "in_progress" | "completed" | "failed" | "cancelled" | "cancellation_requested";
+  providerStatus: string | null;
+  modelInputs: Record<string, unknown>;
+  expectedOutputConstraints: Record<string, unknown>;
+  retryCount: number;
+  errorClassification: string | null;
   errorCode: string | null;
   errorMessage: string | null;
   queuedAt: string | null;
   startedAt: string | null;
   completedAt: string | null;
+  cancellationRequestedAt: string | null;
+  webhookProcessedAt: string | null;
+  providerCompletedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -158,20 +168,34 @@ export type GeneratedAssetRecord = {
   updatedAt: string;
 };
 
+function parseGenerationJob(row: Record<string, unknown> | undefined): GenerationJobRecord | null {
+  if (!row) return null;
+  return {
+    ...row,
+    modelInputs: JSON.parse(String(row.modelInputsJson ?? "{}")),
+    expectedOutputConstraints: JSON.parse(String(row.expectedOutputConstraintsJson ?? "{}")),
+  } as GenerationJobRecord;
+}
+
 export function getGenerationJobForUser(db: AppDatabase, userId: string, jobId: string): GenerationJobRecord | null {
-  return (
-    db
-      .prepare(
+  const row = db
+    .prepare(
         `SELECT id, user_id AS userId, project_id AS projectId, page_plan_id AS pagePlanId,
                 prompt_version_id AS promptVersionId, provider_job_id AS providerJobId,
-                generation_model AS generationModel, generation_endpoint AS generationEndpoint,
-                seed, status, error_code AS errorCode, error_message AS errorMessage,
+                fal_request_id AS falRequestId, generation_model AS generationModel,
+                generation_endpoint AS generationEndpoint, seed, status, local_status AS localStatus,
+                provider_status AS providerStatus, model_inputs_json AS modelInputsJson,
+                expected_output_constraints_json AS expectedOutputConstraintsJson,
+                retry_count AS retryCount, error_classification AS errorClassification,
+                error_code AS errorCode, error_message AS errorMessage,
                 queued_at AS queuedAt, started_at AS startedAt, completed_at AS completedAt,
+                cancellation_requested_at AS cancellationRequestedAt,
+                webhook_processed_at AS webhookProcessedAt, provider_completed_at AS providerCompletedAt,
                 created_at AS createdAt, updated_at AS updatedAt
          FROM generation_jobs WHERE id = ? AND user_id = ?`,
       )
-      .get(jobId, userId) as GenerationJobRecord | undefined
-  ) ?? null;
+      .get(jobId, userId) as Record<string, unknown> | undefined;
+  return parseGenerationJob(row);
 }
 
 export function getGeneratedAssetForUser(db: AppDatabase, userId: string, assetId: string): GeneratedAssetRecord | null {

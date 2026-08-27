@@ -287,3 +287,11 @@ export function restorePromptVersion(db: AppDatabase, userId: string, promptVers
   const composed = composePrompt({ source: original.sourceFieldSnapshot, generationModel: original.generationModel, generationEndpoint: original.generationEndpoint, aspectRatio: original.aspectRatio, seed: original.seed ?? undefined, referenceAssetIds: original.referenceAssetIds, userEdits: original.userEdits });
   return createPromptVersion(db, userId, composed, { projectId: original.projectId, pagePlanId: original.pagePlanId, generationModel: original.generationModel, generationEndpoint: original.generationEndpoint, aspectRatio: original.aspectRatio, seed: original.seed ?? undefined, referenceAssetIds: original.referenceAssetIds, userEdits: original.userEdits }, original.id);
 }
+
+export function freezePromptVersion(db: AppDatabase, userId: string, promptVersionId: string): PromptVersionRecord {
+  const existing = getPromptVersionForUser(db, userId, promptVersionId);
+  if (!existing) throw new Error("Prompt version not found.");
+  if (existing.status === "archived" || existing.status === "superseded") throw new Error("This prompt version cannot be frozen.");
+  db.prepare(`UPDATE prompt_versions SET status = 'approved', updated_at = ? WHERE id = ? AND user_id = ?`).run(new Date().toISOString(), promptVersionId, userId);
+  return getPromptVersionForUser(db, userId, promptVersionId)!;
+}

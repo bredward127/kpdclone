@@ -10,7 +10,9 @@ import { lifecycleStatuses, pageApprovalStates } from "../shared/studio";
 import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
 import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset } from "./reference-assets";
 import { getReferenceValidationLimits } from "./reference-validation";
-import { composePromptFromSavedProject, createPromptVersion, getPromptVersionForUser, listPromptVersions, restorePromptVersion } from "./prompt-composer";
+import { composePromptFromSavedProject, createPromptVersion, freezePromptVersion, getPromptVersionForUser, listPromptVersions, restorePromptVersion } from "./prompt-composer";
+import { createFalGenerationService, type FalGenerationService } from "./fal-generation";
+import { getFalQueueClient } from "./fal-queue";
 import { falModelRegistry } from "./fal-models";
 import { createProject, deleteProjectForUser, getProjectForUser, listProjects, updateProjectForUser, upsertUser, type AppDatabase, type UserRecord } from "./db";
 
@@ -51,11 +53,12 @@ export function createAppRouter(
     falStatus?: () => Promise<FalConnectionStatus>;
     falAdminEnv?: NodeJS.ProcessEnv;
     storage?: PrivateStorage;
-  } = {},
-) {
+    generationService?: FalGenerationService;
+  } = {}) {
   const falStatus = options.falStatus ?? (() => getFalConnectionStatus());
   const falAdminEnv = options.falAdminEnv ?? process.env;
   const storage = options.storage ?? createLocalPrivateStorage();
+  const generationService = "generationService" in options ? options.generationService : (process.env.NODE_ENV === "test" ? undefined : createFalGenerationService({ adapter: getFalQueueClient(), storage, webhookUrl: process.env.FAL_WEBHOOK_URL }));
   const referenceLimits = getReferenceValidationLimits();
 
   return router({
@@ -132,6 +135,12 @@ export function createAppRouter(
             throw new TRPCError({ code: "BAD_REQUEST", message: "The prompt could not be composed from the saved project context." });
           }
         }),
+        freeze: protectedProcedure.input(z.object({ projectId: z.string().min(1), promptVersionId: z.string().min(1) })).mutation(({ ctx, input }) => {
+          const existing = getPromptVersionForUser(db, ctx.user.id, input.promptVersionId);
+          if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "Prompt version not found." });
+          try { return freezePromptVersion(db, ctx.user.id, input.promptVersionId); }
+          catch { throw new TRPCError({ code: "BAD_REQUEST", message: "This prompt version could not be frozen for generation." }); }
+        }),
         restore: protectedProcedure.input(z.object({ projectId: z.string().min(1), promptVersionId: z.string().min(1) })).mutation(({ ctx, input }) => {
           const existing = getPromptVersionForUser(db, ctx.user.id, input.promptVersionId);
           if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "Prompt version not found." });
@@ -176,6 +185,29 @@ export function createAppRouter(
         }),
       }),
       generationJobs: router({
+        submit: protectedProcedure.input(z.object({
+          projectId: z.string().min(1), pagePlanId: z.string().min(1), promptVersionId: z.string().min(1),
+          generationModel: z.string().min(1).max(200), generationEndpoint: z.string().min(1).max(300), aspectRatio: z.string().regex(/^\\d+:\\d+$/), seed: z.number().int().optional(), referenceAssetIds: z.array(z.string().min(1)).max(24), expectedOutputConstraints: z.record(z.string(), z.unknown()).default({}),
+        })).mutation(async ({ ctx, input }) => {
+          if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
+          try { return await generationService.submit(db, ctx.user.id, input); }
+          catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Generation could not be submitted safely." }); }
+        }),
+        cancel: protectedProcedure.input(z.object({ jobId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+          if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
+          try { return await generationService.cancel(db, ctx.user.id, input.jobId); }
+          catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Generation cancellation could not be requested safely." }); }
+        }),
+        reconcile: protectedProcedure.input(z.object({ jobId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+          if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
+          try { return await generationService.reconcile(db, ctx.user.id, input.jobId); }
+          catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Generation status could not be reconciled safely." }); }
+        }),
+        retry: protectedProcedure.input(z.object({ jobId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+          if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
+          try { return await generationService.retry(db, ctx.user.id, input.jobId); }
+          catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Generation retry could not be submitted safely." }); }
+        }),
         create: protectedProcedure.input(projectIdInput.extend({
           pagePlanId: z.string().min(1).optional(),
           promptVersionId: z.string().min(1).optional(),

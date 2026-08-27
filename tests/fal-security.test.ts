@@ -26,7 +26,7 @@ describe("FAL secret boundary", () => {
     const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(error);
     const logged: unknown[] = [];
     const status = await createFalClient(
-      { apiKey: syntheticSentinel, baseUrl: "https://api.fal.ai", timeoutMs: 10 },
+      { apiKey: syntheticSentinel, baseUrl: "https://api.fal.ai", queueBaseUrl: "https://queue.fal.run", timeoutMs: 10 },
       { fetchImpl, logger: { error: (details, message) => logged.push({ details, message }) } },
     ).checkConnection();
 

@@ -52,3 +52,13 @@ The Page Studio prompt composer builds a complete generation request from the sa
 Each composed request is persisted as an immutable `prompt_versions` record with a source-field snapshot, verbatim user edits, endpoint/model/aspect-ratio/seed values, eligible reference IDs, explainable lint warnings, and a deterministic SHA-256 content hash. The prompt history UI provides side-by-side comparison and restores a selected version by creating a new version linked to the original; it never mutates an existing snapshot.
 
 Prompt linting reports warnings for missing subjects, vague visual style, inconsistent age declarations, unsupported visual references, protected brand/copyright requests, living-artist style imitation, sexualized child/minor content, and conflicting print constraints. Warnings include a code, message, evidence, and section. Linting does not silently rewrite user text. This phase does not call FAL or generate images.
+
+## Asynchronous FAL generation
+
+FAL generation is server-only. Protected typed procedures accept a project, page plan, approved immutable prompt version, endpoint parameters, selected reference IDs, and expected output constraints. The server verifies ownership and that the prompt version is explicitly frozen (`approved`) before submitting to the FAL queue. It stores the local job first, then persists the FAL `request_id` immediately and returns the local job ID plus provider request ID to the caller. Browser code never calls FAL.
+
+The local job tracks local/provider status, provider request identity, model inputs, queue timestamps, retry count, error classification, cancellation requests, source prompt version, and expected output constraints. Cancellation marks `cancellation_requested` before passing cancellation to FAL when possible. Reconciliation checks one known provider request only; it does not start a polling loop.
+
+The webhook endpoint is disabled unless `FAL_WEBHOOK_ENABLED=true` and an HTTPS `FAL_WEBHOOK_URL` are configured. The implementation follows the current official FAL ED25519/JWKS signature mechanism with a five-minute timestamp window and a maximum 24-hour JWKS cache. Valid callbacks are acknowledged quickly, then processed idempotently by provider request ID. Result URLs are treated as transient: supported image bytes are downloaded server-side, validated, checksummed, and written to private storage before a durable `generated_assets` record is created.
+
+The provider queue migration is `0005_fal_generation_queue.sql`. No FAL credential is stored in database rows, logs, tests, or client bundles.

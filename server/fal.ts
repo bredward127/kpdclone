@@ -3,11 +3,13 @@ import { z } from "zod";
 const falEnvSchema = z.object({
   FAL_KEY: z.string().trim().min(1).optional(),
   FAL_BASE_URL: z.string().url().optional(),
+  FAL_QUEUE_BASE_URL: z.string().url().optional(),
 });
 
 export type FalConfig = {
   apiKey: string;
   baseUrl: string;
+  queueBaseUrl: string;
   timeoutMs: number;
 };
 
@@ -33,6 +35,7 @@ export function loadFalConfig(env: NodeJS.ProcessEnv = process.env): FalConfig |
   return {
     apiKey: parsed.data.FAL_KEY,
     baseUrl: (parsed.data.FAL_BASE_URL ?? "https://api.fal.ai").replace(/\/$/, ""),
+    queueBaseUrl: (parsed.data.FAL_QUEUE_BASE_URL ?? "https://queue.fal.run").replace(/\/$/, ""),
     timeoutMs: 5_000,
   };
 }
@@ -41,6 +44,13 @@ export function assertFalConfiguredForProduction(env: NodeJS.ProcessEnv = proces
   if (env.NODE_ENV === "production" && !loadFalConfig(env)) {
     throw new Error("FAL_KEY is absent. Configure the FAL_KEY deployment secret before starting production.");
   }
+}
+
+export function assertFalWebhookConfiguredForProduction(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.NODE_ENV !== "production" || env.FAL_WEBHOOK_ENABLED !== "true") return;
+  let webhookUrl: URL;
+  try { webhookUrl = new URL(env.FAL_WEBHOOK_URL ?? ""); } catch { throw new Error("FAL_WEBHOOK_URL is required and must be an HTTPS public URL before enabling FAL_WEBHOOK_ENABLED."); }
+  if (webhookUrl.protocol !== "https:") throw new Error("FAL_WEBHOOK_URL must use HTTPS before enabling FAL_WEBHOOK_ENABLED.");
 }
 
 export function createFalClient(
