@@ -3,6 +3,7 @@ import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import VisualReferenceDesk from "@/components/VisualReferenceDesk";
+import PromptStudio from "@/components/PromptStudio";
 
 const sectionCopy = {
   "book-brief": { eyebrow: "02 / Book brief", title: "Begin with the feeling.", description: "Capture the heart of the story, its reader, and the visual language you want to carry through every page.", icon: FileText, next: "blueprint", nextLabel: "Shape the blueprint" },
@@ -30,6 +31,7 @@ export default function StudioSection({ projectId, section }: { projectId: strin
         <div className="mb-7 flex items-center justify-between gap-4"><Link href="/projects" className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--muted-ink)] hover:text-[var(--ink)]"><ArrowLeft size={15} /> All projects</Link><span className="mono rounded-full bg-[#e9f2ed] px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-[#517b68]">Draft workspace</span></div>
         <header className="mb-9 grid gap-7 border-b border-[var(--line)] pb-10 md:grid-cols-[1fr_280px] md:items-end"><div><p className="mono mb-3 text-[10px] uppercase tracking-[0.24em] text-[var(--coral)]">{copy.eyebrow}</p><h1 className="serif max-w-2xl text-5xl leading-[1.04] text-[var(--ink)] md:text-6xl">{copy.title}</h1><p className="mt-5 max-w-xl text-sm leading-6 text-[var(--muted-ink)]">{copy.description}</p></div><div className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5"><p className="mono text-[9px] uppercase tracking-[0.18em] text-[var(--muted-ink)]">Active book</p><p className="mt-2 truncate text-sm font-semibold text-[var(--ink)]">{project.data.name}</p></div></header>
         <VisualReferenceDesk projectId={projectId} />
+        <PromptStudio projectId={projectId} />
       </div>
     );
   }

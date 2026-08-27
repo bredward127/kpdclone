@@ -10,6 +10,7 @@ import { lifecycleStatuses, pageApprovalStates } from "../shared/studio";
 import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
 import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset } from "./reference-assets";
 import { getReferenceValidationLimits } from "./reference-validation";
+import { composePromptFromSavedProject, createPromptVersion, getPromptVersionForUser, listPromptVersions, restorePromptVersion } from "./prompt-composer";
 import { falModelRegistry } from "./fal-models";
 import { createProject, deleteProjectForUser, getProjectForUser, listProjects, updateProjectForUser, upsertUser, type AppDatabase, type UserRecord } from "./db";
 
@@ -99,6 +100,46 @@ export function createAppRouter(
             throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
           }
           return createBookBrief(db, ctx.user.id, { id: crypto.randomUUID(), ...input });
+        }),
+      }),
+      prompts: router({
+        list: protectedProcedure.input(z.object({ projectId: z.string().min(1), pagePlanId: z.string().min(1) })).query(({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          const page = getPagePlanForUser(db, ctx.user.id, input.pagePlanId);
+          if (!page || page.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "Page plan not found." });
+          return listPromptVersions(db, ctx.user.id, input.projectId, input.pagePlanId);
+        }),
+        composeAndSave: protectedProcedure.input(z.object({
+          projectId: z.string().min(1),
+          pagePlanId: z.string().min(1),
+          generationModel: z.string().trim().min(1).max(200),
+          generationEndpoint: z.string().trim().min(1).max(300),
+          aspectRatio: z.string().trim().regex(/^\d+:\d+$/),
+          seed: z.number().int().optional(),
+          referenceAssetIds: z.array(z.string().min(1)).max(24),
+          userEdits: z.object({
+            promptAddition: z.string().max(10_000).optional(),
+            negativePromptAddition: z.string().max(10_000).optional(),
+            compositionNotes: z.string().max(10_000).optional(),
+          }).optional(),
+        })).mutation(({ ctx, input }) => {
+          try {
+            const composed = composePromptFromSavedProject(db, ctx.user.id, input);
+            return createPromptVersion(db, ctx.user.id, composed, input);
+          } catch (error) {
+            if (error instanceof Error && error.message === "Project not found.") throw new TRPCError({ code: "NOT_FOUND", message: error.message });
+            if (error instanceof Error && error.message === "Page plan not found.") throw new TRPCError({ code: "NOT_FOUND", message: error.message });
+            throw new TRPCError({ code: "BAD_REQUEST", message: "The prompt could not be composed from the saved project context." });
+          }
+        }),
+        restore: protectedProcedure.input(z.object({ projectId: z.string().min(1), promptVersionId: z.string().min(1) })).mutation(({ ctx, input }) => {
+          const existing = getPromptVersionForUser(db, ctx.user.id, input.promptVersionId);
+          if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "Prompt version not found." });
+          try {
+            return restorePromptVersion(db, ctx.user.id, input.promptVersionId);
+          } catch {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "This prompt version could not be restored." });
+          }
         }),
       }),
       pages: router({
