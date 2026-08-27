@@ -1,7 +1,7 @@
 import express from "express";
 import path from "node:path";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { clearSession, getCurrentUser, isDevAuthEnabled, setSession } from "./auth";
+import { clearSession, getCurrentUser, isDevAuthEnabled, isTestAuthEnabled, isValidTestAuthPassword, setSession } from "./auth";
 import { assertFalConfiguredForProduction, assertFalWebhookConfiguredForProduction, loadFalConfig } from "./fal";
 import { verifyFalWebhookSignature } from "./fal-queue";
 import { createFalGenerationService } from "./fal-generation";
@@ -77,6 +77,7 @@ app.post("/api/fal/webhook", express.raw({ type: "application/json", limit: "2mb
   void generationService.processWebhook(db, payload as Parameters<typeof generationService.processWebhook>[1]).then(() => { db.prepare("UPDATE fal_webhook_events SET processed_at = ? WHERE request_id = ?").run(new Date().toISOString(), requestId); }).catch((error) => { console.error("FAL webhook processing failed", redactSensitive({ requestId, error: error instanceof Error ? error.message : "unknown" }, [process.env.FAL_KEY ?? ""])); });
 });
 
+app.use(express.urlencoded({ extended: false, limit: "10kb" }));
 app.use(express.json({ limit: process.env.VISUAL_REFERENCE_JSON_LIMIT ?? "20mb" }));
 
 app.get("/health", (_req, res) => {
@@ -95,6 +96,23 @@ app.get("/auth/dev-login", (req, res) => {
     email: String(req.query.email || "creator@example.com"),
   };
   setSession(res, user);
+  res.redirect("/");
+});
+
+app.get("/auth/test-login", (_req, res) => {
+  if (!isTestAuthEnabled()) {
+    res.status(404).json({ message: "Not found" });
+    return;
+  }
+  res.type("html").send(`<!doctype html><html><head><meta charset="utf-8"><title>Private test login</title></head><body><main><h1>Private test login</h1><p>This temporary login is for owner testing only. Disable it before inviting customers.</p><form method="post" action="/auth/test-login"><label for="password">Test password</label><input id="password" name="password" type="password" required autofocus><button type="submit">Sign in for testing</button></form></main></body></html>`);
+});
+
+app.post("/auth/test-login", (req, res) => {
+  if (!isTestAuthEnabled() || typeof req.body?.password !== "string" || !isValidTestAuthPassword(req.body.password)) {
+    res.status(401).type("html").send("<!doctype html><title>Unauthorized</title><p>Test login failed.</p>");
+    return;
+  }
+  setSession(res, { id: "render-test-creator", name: "Render Test Creator", email: "render-test@example.com" });
   res.redirect("/");
 });
 

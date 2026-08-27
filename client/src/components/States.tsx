@@ -18,8 +18,8 @@ export function UnauthorizedState() {
       <p className="mono mb-3 text-[11px] uppercase tracking-[0.22em] text-[var(--coral)]">Private studio</p>
       <h2 className="serif text-3xl text-[var(--ink)]">Sign in to enter the workshop.</h2>
       <p className="mt-3 max-w-md text-sm leading-6 text-[var(--muted-ink)]">Your book briefs, references, and project decisions belong to your creator account. Sign in to load your server-backed workspace.</p>
-      <a className="mt-7 inline-flex items-center gap-2 rounded-full bg-[var(--coral)] px-5 py-3 text-sm font-semibold text-white hover:bg-[#c95d4d]" href="/auth/dev-login">
-        Continue to sign in <ArrowRight size={16} />
+      <a className="mt-7 inline-flex items-center gap-2 rounded-full bg-[var(--coral)] px-5 py-3 text-sm font-semibold text-white hover:bg-[#c95d4d]" href="/auth/test-login">
+        Continue to test sign in <ArrowRight size={16} />
       </a>
     </div>
   );

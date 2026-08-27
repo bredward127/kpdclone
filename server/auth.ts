@@ -110,3 +110,14 @@ export function getCurrentUser(req: Request, db: AppDatabase): UserRecord | null
 export function isDevAuthEnabled(): boolean {
   return process.env.NODE_ENV !== "production" && process.env.ENABLE_DEV_AUTH !== "false";
 }
+
+export function isTestAuthEnabled(): boolean {
+  return process.env.TEST_AUTH_ENABLED === "true" && Boolean(process.env.TEST_AUTH_PASSWORD);
+}
+
+export function isValidTestAuthPassword(value: string): boolean {
+  const expected = process.env.TEST_AUTH_PASSWORD ?? "";
+  const providedBuffer = Buffer.from(value);
+  const expectedBuffer = Buffer.from(expected);
+  return providedBuffer.length > 0 && providedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(providedBuffer, expectedBuffer);
+}
