@@ -7,6 +7,9 @@ import { isFalAdministrator } from "./fal-admin";
 import { getFalConnectionStatus, type FalConnectionStatus } from "./fal";
 import { createBookBrief, createPagePlan, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, insertGenerationJob, listAuditEvents, listExportPackages, listPagePlans, transitionAssetStatus, transitionGenerationJob, updatePageApproval } from "./db-studio";
 import { lifecycleStatuses, pageApprovalStates } from "../shared/studio";
+import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
+import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset } from "./reference-assets";
+import { getReferenceValidationLimits } from "./reference-validation";
 import { falModelRegistry } from "./fal-models";
 import { createProject, deleteProjectForUser, getProjectForUser, listProjects, updateProjectForUser, upsertUser, type AppDatabase, type UserRecord } from "./db";
 
@@ -46,10 +49,13 @@ export function createAppRouter(
   options: {
     falStatus?: () => Promise<FalConnectionStatus>;
     falAdminEnv?: NodeJS.ProcessEnv;
+    storage?: PrivateStorage;
   } = {},
 ) {
   const falStatus = options.falStatus ?? (() => getFalConnectionStatus());
   const falAdminEnv = options.falAdminEnv ?? process.env;
+  const storage = options.storage ?? createLocalPrivateStorage();
+  const referenceLimits = getReferenceValidationLimits();
 
   return router({
     auth: router({
@@ -200,6 +206,78 @@ export function createAppRouter(
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
           return listAuditEvents(db, ctx.user.id, input.projectId);
         }),
+      }),
+    }),
+    references: router({
+      list: protectedProcedure.input(projectIdInput).query(async ({ ctx, input }) => {
+        if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+        const references = listReferenceAssets(db, ctx.user.id, input.projectId);
+        return Promise.all(references.map(async (reference) => {
+          const { storageKey: _storageKey, ...safeReference } = reference;
+          return { ...safeReference, accessUrl: await storage.createAccessUrl(reference.storageKey, 15 * 60) };
+        }));
+      }),
+      upload: protectedProcedure.input(z.object({
+        projectId: z.string().min(1),
+        pagePlanId: z.string().min(1).optional(),
+        referenceKind: z.enum(referenceKinds),
+        originalFilename: z.string().trim().min(1).max(255),
+        declaredMimeType: z.enum(["image/png", "image/jpeg", "image/webp"]),
+        provenanceDeclaration: z.enum(provenanceDeclarations),
+        rightsAttestation: z.literal(true),
+        bytesBase64: z.string().min(1).max(14_000_000),
+        replacesId: z.string().min(1).optional(),
+      })).mutation(async ({ ctx, input }) => {
+        let bytes: Buffer;
+        try {
+          if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input.bytesBase64) || input.bytesBase64.length % 4 === 1) throw new Error("invalid encoding");
+          bytes = Buffer.from(input.bytesBase64, "base64");
+          if (!bytes.length) throw new Error("empty encoding");
+        } catch {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "The uploaded image encoding is invalid." });
+        }
+        try {
+          const reference = await uploadReferenceAsset(db, storage, ctx.user.id, { ...input, bytes }, referenceLimits);
+          const { storageKey: _storageKey, ...safeReference } = reference;
+          return { ...safeReference, accessUrl: await storage.createAccessUrl(reference.storageKey, 15 * 60) };
+        } catch (error) {
+          const knownMessages = [
+            "Project not found.",
+            "Page plan not found.",
+            "Reference to replace is unavailable.",
+            "Rights attestation is required",
+            "Unsupported visual reference type.",
+            "The visual reference is empty.",
+            "The visual reference exceeds the configured file-size limit.",
+            "The file content does not match PNG, JPEG, or WebP.",
+            "The visual reference has no readable dimensions.",
+            "The visual reference exceeds the configured pixel-dimension limit.",
+            "The visual reference exceeds the configured pixel-count limit.",
+            "The visual reference is corrupted or unsafe to decode.",
+          ];
+          const rawMessage = error instanceof Error ? error.message : "";
+          const message = knownMessages.find((candidate) => rawMessage === candidate || rawMessage.startsWith(candidate)) ?? "The visual reference could not be stored safely.";
+          throw new TRPCError({ code: "BAD_REQUEST", message });
+        }
+      }),
+      delete: protectedProcedure.input(z.object({ referenceId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+        const reference = getReferenceAssetForUser(db, ctx.user.id, input.referenceId);
+        if (!reference) throw new TRPCError({ code: "NOT_FOUND", message: "Visual reference not found." });
+        try {
+          const deleted = await deleteReferenceAssetForUser(db, storage, ctx.user.id, input.referenceId);
+          if (!deleted) throw new Error("not found");
+          return { ok: true };
+        } catch {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "The visual reference could not be deleted safely." });
+        }
+      }),
+      canUseForGeneration: protectedProcedure.input(z.object({ referenceId: z.string().min(1) })).query(({ ctx, input }) => {
+        try {
+          const reference = assertReferenceCanBeUsedForGeneration(db, ctx.user.id, input.referenceId);
+          return { canUse: true as const, referenceId: reference.id };
+        } catch {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Rights attestation is required before using this visual reference for generation." });
+        }
       }),
     }),
     project: router({
