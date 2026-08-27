@@ -1,273 +1,394 @@
-# KDP Kids Book Studio: From-Scratch Entrepreneur Testing Roadmap
+# KDP Kids Book Studio for Beginners
+## A click-by-click guide to launching, testing, and downloading your first book
 
-**Audience:** A first-time entrepreneur who has just purchased the product and wants to create one complete children’s book, generate the production files, and download them to a computer.
+**Audience:** You have purchased or are evaluating KDP Kids Book Studio, you are not a software engineer, and you want to create one real book from beginning to end.
 
-**Purpose:** This is the practical launch-and-test guide. Follow it in order. It explains what you must set up outside the application, what you type into the application, what each stage should produce, and how to know whether the final ZIP is usable for manual KDP upload review.
+**What this guide does:** It tells you which services to use, where to create accounts, what to click, what to type, how to test the book, and what a successful result looks like.
 
-> **Important boundary:** The application creates files for your review. It does not publish to KDP, guarantee KDP acceptance, provide legal clearance, or replace KDP Print Previewer. You remain responsible for rights, permissions, metadata, AI disclosure, and final KDP review.
+**Last reviewed:** August 27, 2026
 
-## 1. What you are building
+> **The short answer:** You can use Vercel for websites, but the current KDP Kids Book Studio is not a good direct fit for Vercel as a complete application. The current product uses an Express server, SQLite database files, private local storage, server-side image processing, PDFs, ZIP creation, and asynchronous provider callbacks. Vercel’s own documentation says SQLite cannot be used for permanent storage in its serverless environment because the filesystem is ephemeral [1]. For the current product, I recommend **Render Web Service + Render Persistent Disk** for your first hosted pilot. Vercel can remain a separate marketing-site host later, but it should not be the only host for this current codebase.
 
-You are testing this path:
+## Part 1: Understand what you are buying
 
-> **Authenticated creator → durable project → text and visual brief → remembered creative memory → per-page prompt version → secure FAL generation → human review and approval → interior PDF → template-based cover PDF → KDP-oriented preflight → private ZIP package → download to your computer.**
+KDP Kids Book Studio is not a button that automatically publishes a book to Amazon. It is a private production workspace. You use it to organize a book, create original artwork, review every page, assemble print files, validate them against a versioned KDP-oriented ruleset, and download a package for your own manual review and upload.
 
-The workflow is deliberately page-oriented. You do not ask the system to generate an entire unreviewed book in one uncontrolled operation. You create or approve one page at a time, and only approved assets can enter the final interior.
+The full customer journey is:
 
-## 2. What you must have before opening the app
+| Step | Plain-English meaning | What you should see |
+|---:|---|---|
+| 1 | Sign in as the creator | A private studio, not a public sample page |
+| 2 | Create a project | Your book remains after refresh or restart |
+| 3 | Write the brief | The app remembers your title, audience, characters, style, and print choices |
+| 4 | Add a visual reference | A private thumbnail and rights confirmation |
+| 5 | Create a page plan | An ordered list of pages |
+| 6 | Create a prompt version | A saved, frozen record of what will be sent for generation |
+| 7 | Generate one page | A secure server-side FAL request and a visible job status |
+| 8 | Review and approve | A human decides whether the image may be used |
+| 9 | Assemble the interior | A print-oriented interior PDF and layout manifest |
+| 10 | Build the cover | A template-based single-page full-wrap PDF |
+| 11 | Run preflight | Errors and warnings with exact page or cover locations |
+| 12 | Create the package | A private ZIP that you download to your computer |
 
-You need a computer with Node.js 22 or a compatible current Node.js release, Git, pnpm, and access to the GitHub repository. You also need a server environment with a persistent database location, private storage location, HTTPS in production, and a secret manager. Do not run the production version with a temporary filesystem: generated images, PDFs, and ZIP packages must survive process restarts.
+The app intentionally does **not** generate an entire unreviewed book in one uncontrolled request. You approve the pages that enter the final book.
 
-You need an FAL account and a server-side FAL credential. The credential must be stored as `FAL_KEY` in the deployment secret manager. Do not paste it into a browser form, database field, spreadsheet, screenshot, chat transcript, source file, client-side environment file, or downloadable book package.
+## Part 2: The service recommendation
 
-You must choose an inexpensive FAL image endpoint and confirm that its current official model documentation has been reviewed. The endpoint identifier is configured as `FAL_SMOKE_ENDPOINT` for the one-image smoke test and is also registered in the application’s administrator-reviewed model registry. The application must not guess model behavior from memory.
+### Recommended setup for your first hosted pilot: Render
 
-For a cover, you must retrieve the current official KDP calculator/template output after you know the binding, trim, paper, ink, bleed, and final interior page count. The template is not optional for a production cover. It is the source of the final cover geometry.
+Use **Render** for the complete current application:
 
-For typography, you need permitted font files or a configured permitted-font set. Keep the font license or permission record outside the application for your business records.
+1. **Render Web Service:** runs the Node/Express application and serves the React website.
+2. **Render Persistent Disk:** stores the SQLite database and private images/PDFs/ZIPs between restarts and deployments. Render documents that ordinary service filesystems are ephemeral and that persistent disks preserve files across deploys and restarts [2]. A persistent disk is a paid-service feature, so check the current Render price before subscribing.
+3. **GitHub:** stores the application source code and automatically supplies new deployments when you push updates.
+4. **FAL:** generates the approved page artwork. Its secret is stored only in Render’s server-side environment settings.
+5. **Your domain provider:** optional for the first test, recommended before inviting real customers.
 
-For browser acceptance testing, install the Playwright browser binary and provide a separate authenticated test server and test identity. This is different from the server-side deterministic test suite.
+Render also documents background workers for long-running media and third-party API tasks [3]. The current code already uses an asynchronous FAL queue/callback pattern. For a first pilot, begin with one Render Web Service and the existing application behavior. Before scaling to many customers or multiple instances, have the application upgraded to use a managed database/object-storage service and a dedicated worker queue.
 
-## 3. Environment variables
+### Why I do not recommend “Vercel only” for the current version
 
-Create these variables in the server deployment environment. For local testing, use a local `.env` file that is never committed to Git. The values below describe the role of each variable; they are not secrets unless marked as secret.
+Vercel is excellent for frontend websites and serverless applications, but the current repository writes a SQLite file and private files to the local filesystem. Vercel’s official guidance says SQLite cannot be used for permanent storage in Vercel’s serverless environment [1]. A Vercel-only deployment would require a separate database, separate private object storage, serverless-compatible image/PDF handling, webhook changes, and likely an application architecture change.
 
-| Variable | Required? | What to enter | Where it comes from | Do not do |
-|---|---:|---|---|---|
-| `NODE_ENV` | Yes | `development` for local work; `production` for deployment | Your run mode | Do not use development mode as a production security substitute. |
-| `DATABASE_PATH` | Yes for local/filesystem deployment | Absolute path to a persistent SQLite database, for example `/var/lib/kdp-kids-book-studio/app.db` | Your server volume | Do not place the production database in a disposable build directory. |
-| `PRIVATE_STORAGE_DIR` | Yes for local/filesystem deployment | Absolute private storage directory, for example `/var/lib/kdp-kids-book-studio/private-storage` | Your server volume | Do not serve this directory as a public browser folder. |
-| `SESSION_SECRET` | Yes in production | A long random secret generated by your secret manager | Deployment secret manager | Do not use the development fallback or reuse an unrelated password. |
-| `FAL_KEY` | Required for FAL generation | Your FAL server credential | FAL account plus deployment secret manager | Never expose it to the browser, database, logs, screenshots, or ZIP files. |
-| `FAL_SMOKE_ENDPOINT` | Required only for live smoke | Stable identifier of one inexpensive administrator-reviewed image endpoint | Current official FAL model documentation | Do not invent an endpoint identifier or use an unreviewed model. |
-| `FAL_WEBHOOK_ENABLED` | Required for production callbacks | `true` when the HTTPS webhook is deployed and verified; otherwise `false` | Deployment decision | Do not enable it before the public URL and verification configuration are ready. |
-| `FAL_WEBHOOK_URL` | Required when callbacks are enabled | Your public HTTPS callback URL, such as `https://studio.example.com/webhooks/fal` | Your deployed domain | Do not use localhost or HTTP in production. |
-| `FAL_WEBHOOK_JWKS_URL` | Conditional | The provider-documented verification/JWKS URL if your selected FAL verification method uses it | Current official FAL webhook documentation | Do not copy keys into source code or database rows. |
-| `PORT` | Usually optional | The port supplied by your hosting platform, commonly `3000` locally | Hosting platform | Do not expose the server directly without HTTPS/reverse-proxy controls in production. |
-| `TRUSTED_AUTH_PROXY` | Conditional | Your explicitly trusted authentication proxy setting, only if deployment uses one | Your deployment architecture | Do not enable proxy trust for arbitrary client headers. |
-| `ENABLE_DEV_AUTH` | Local development only | The project-supported local development value, if needed | Local test setup | Never enable development auth in production. |
-| `VISUAL_REFERENCE_JSON_LIMIT` | Optional | A bounded request-size limit appropriate for your deployment | Your security policy | Do not remove upload limits. |
-| `LIVE_FAL_SMOKE` | Owner-gated | `1` only for the one disposable smoke test | Explicit operator action | Do not set it automatically in CI or production startup. |
-| `CONFIRM_LIVE_FAL` | Owner-gated | `GENERATE_ONE_TEST_IMAGE` | Authorized owner confirmation | Do not substitute a weaker confirmation. |
-| `FAL_SMOKE_ADMIN` | Optional | `1` only when an authorized administrator is allowed to see the provider request ID | Operator policy | Do not use this to print the FAL key. |
-| `RUN_BROWSER_E2E` | Optional | `1` only when an authenticated test server and Playwright browser are ready | Test environment | Do not confuse this with a production user session. |
-| `E2E_BASE_URL` | Browser E2E only | Base URL of the authenticated test server | Test environment | Do not point browser tests at a real customer production account. |
-| `CI` | Set by CI systems | Normally supplied automatically | CI provider | Live FAL smoke must remain disabled in CI. |
+You can still use Vercel for a future public landing page. If you do that, the public landing page and the KDP Studio application would be two separate deployments. Do not point the current full application at Vercel until its database, storage, long-running work, and callback architecture have been migrated and tested.
 
-A safe local starting point is to configure `NODE_ENV=development`, a local `DATABASE_PATH`, a local `PRIVATE_STORAGE_DIR`, and a strong local `SESSION_SECRET`. Add `FAL_KEY` only to the server process when you are ready to test generation. Do not put it in `VITE_` variables or any client build configuration.
+### Services you should not buy yet
 
-## 4. Install and start the application
+Do not purchase extra services merely because they appear in a generic software checklist. For the first test, you do not need a separate analytics platform, a separate queue product, a separate PDF service, or a separate AI key-management product. Adding them would increase setup complexity without proving the book workflow.
 
-Clone the repository and install dependencies:
+You do need to confirm the application’s authentication integration before inviting a real customer. The current repository has protected server procedures and an authentication boundary, but the exact hosted login/proxy configuration must be confirmed in your deployed environment. If the deployed site shows “unauthorized” instead of a sign-in experience, stop there and have the authentication integration configured before testing customer data.
 
-```bash
-gh repo clone bredward127/kpdclone
-cd kpdclone
-pnpm install
+## Part 3: Accounts to create and where to go
+
+Open these sites in separate browser tabs:
+
+| Service | Go here | Why you need it | Who should own it |
+|---|---|---|---|
+| GitHub | [github.com](https://github.com/) | Source code and deployment connection | Your business or company account |
+| Render | [dashboard.render.com](https://dashboard.render.com/) | Hosts the current application and persistent disk | Your business account |
+| FAL | [fal.ai](https://fal.ai/) | Provides asynchronous image generation | Your business account |
+| KDP | [kdp.amazon.com](https://kdp.amazon.com/) | Official cover templates, publishing metadata, Print Previewer, and eventual upload | Your publishing business account |
+| Domain provider | The registrar where you buy your domain | Optional branded address such as `studio.yourcompany.com` | Your business account |
+
+Keep the email address, recovery email, billing ownership, and two-factor authentication under your business control. Do not use an employee’s personal account as the only owner account.
+
+## Part 4: Before you deploy, collect these things
+
+Prepare the following in a folder or password manager. Do not put secrets in a normal notes document.
+
+| Item | Example | Where to keep it |
+|---|---|---|
+| GitHub repository access | `bredward127/kpdclone` | GitHub account |
+| Render account | Business owner email | Render account |
+| FAL account | Business owner email | FAL account |
+| FAL server credential | Secret value from FAL | Render secret environment variable only |
+| Reviewed FAL model endpoint | Exact stable endpoint identifier | Business release record and Render variable |
+| Render disk mount plan | `/var/data` | Render service configuration |
+| Production domain | `studio.example.com` | Domain registrar and Render |
+| KDP cover template | Downloaded after final page count is known | Private application upload and business records |
+| Permitted font files | Actual licensed font files | Private business records and protected app workflow |
+| Test book concept | Garden Friends coloring book | Your brief and test record |
+
+## Part 5: Deploy the current application to Render
+
+This section assumes you are starting with the repository already available on GitHub.
+
+### 5.1 Sign up for Render
+
+Go to [dashboard.render.com](https://dashboard.render.com/). Choose **Sign up** or **Get Started**, and use the business email that should own the deployment. If Render offers “Continue with GitHub,” use the GitHub account that can read `bredward127/kpdclone`. Approve only the repository access that you intend to use.
+
+After signing in, you should see the Render dashboard. Do not create a Static Site. The current application needs a running Node server, private storage, and database persistence, so you need a **Web Service**.
+
+### 5.2 Create the Web Service
+
+In Render:
+
+1. Click **New**.
+2. Choose **Web Service**.
+3. Choose **Build and deploy from a Git repository**.
+4. Connect GitHub if Render asks for permission.
+5. Select `bredward127/kpdclone`.
+6. Give the service a business name such as `kdp-kids-book-studio`.
+7. Choose the region closest to your expected customers and FAL traffic.
+8. Choose a paid instance plan that supports a persistent disk. Render’s available plans and prices can change; select the smallest plan that can run the application and check the current billing page before confirming.
+9. Set the build command to:
+
+```text
+pnpm install --frozen-lockfile && pnpm build
 ```
 
-Create the local environment file outside Git’s tracked files. A typical local configuration is:
+10. Set the start command to:
 
-```bash
-NODE_ENV=development
-DATABASE_PATH=/absolute/path/to/kdp-kids-book-studio/data/app.db
-PRIVATE_STORAGE_DIR=/absolute/path/to/kdp-kids-book-studio/data/private-storage
-SESSION_SECRET=generate-a-long-random-local-secret
+```text
+pnpm start
 ```
 
-Only add the following when you are deliberately testing FAL:
+11. Do not click **Create Web Service** yet if you have not prepared the environment variables below. You can create it first and add variables immediately afterward, but the first deployment will not become usable until they are present.
 
-```bash
-FAL_KEY=put-the-server-side-value-here
-FAL_SMOKE_ENDPOINT=the-reviewed-endpoint-identifier
-FAL_WEBHOOK_ENABLED=false
-```
+### 5.3 Add the persistent disk
 
-Run the database migrations and start the development server:
+In the Render service creation form, open **Advanced** and find the disk option. If the disk is not available during creation, create the service and then open its **Disks** page.
 
-```bash
-pnpm db:migrate
-pnpm dev
-```
+Add a persistent disk with:
 
-Open the local URL printed by the server, normally `http://127.0.0.1:3000`. If local development authentication is enabled by the project’s supported setup, use only a test identity. For a real deployment, configure your authentication provider or trusted auth proxy first and confirm that a creator account can sign in.
-
-## 5. First test: verify the system before creating a book
-
-Before creating content, run the deterministic checks:
-
-```bash
-pnpm check
-pnpm test -- --run
-pnpm build
-```
-
-You should see zero TypeScript errors, all deterministic tests passing, and both the client and server production builds completing. The expected current baseline is 16 test files and 69 tests, although the exact count may increase as the product evolves.
-
-For a clean migration check, use a new empty database path:
-
-```bash
-tmpdir=$(mktemp -d)
-DATABASE_PATH="$tmpdir/clean.db" pnpm db:migrate
-rm -rf "$tmpdir"
-```
-
-Do not proceed to a customer-facing deployment if migrations fail or if the application cannot write to private storage.
-
-## 6. Create a real test book
-
-For your first complete book, use a small but production-shaped children’s coloring book. The named fixture already used by the project is a useful reference:
-
-| Field | Suggested first-book value |
+| Setting | Value |
 |---|---|
-| Project name | `Garden Friends — 24-page Coloring Book` |
-| Book type | Children’s activity/coloring book |
-| Trim width | 8.5 inches |
-| Trim height | 11 inches |
-| Page count | 24 pages |
-| Reading direction | Left to right |
-| Interior | Black ink on white paper, unless your intended product differs |
-| Bleed | Choose deliberately and keep it consistent with your page art |
-| Audience | Young children; choose a specific age range in the brief |
-| Visual style | Original clean black line art with simple friendly shapes |
-| Main characters | Two or three original recurring characters, with names and fixed traits |
-| Setting | A simple garden or neighborhood setting |
-| Negative constraints | No text in generated art, no logos, no trademarks, no recognizable copyrighted characters, no living-artist imitation |
+| Mount path | `/var/data` |
+| Size | Start with the smallest size that comfortably holds your test files; increase later if needed |
+| Purpose | SQLite database and private application storage |
 
-### Stage A: Projects
+Render states that only files below the selected mount path are preserved [2]. That is why the application variables below must point into `/var/data`. Do not store customer files in the source-code folder or a public static folder.
 
-Sign in as the creator. Create a new project. Enter the project name, book type, intended page count, trim size, reading direction, and any visible print settings requested by the form. Confirm that the project remains after refreshing the browser or restarting the server. This proves that you are using durable server-backed project data rather than browser-only temporary state.
+### 5.4 Add environment variables in Render
 
-### Stage B: Book Brief
+In the Render service, open **Environment** or **Environment Variables**, then click **Add Environment Variable**. Add these one by one. Click **Save Changes** when finished.
 
-Enter the book’s durable creative brief. Use complete, specific values rather than vague instructions.
+#### Required pilot variables
 
-| Brief field | Example input |
+| Name | Value for your Render service | Secret? |
+|---|---|---:|
+| `NODE_ENV` | `production` | No |
+| `PORT` | Leave blank if Render supplies it automatically; otherwise use the port required by the service | No |
+| `DATABASE_PATH` | `/var/data/app.db` | No |
+| `PRIVATE_STORAGE_DIR` | `/var/data/private-storage` | No |
+| `SESSION_SECRET` | Generate a long random value in a password manager | **Yes** |
+| `FAL_KEY` | Your FAL server credential | **Yes** |
+| `FAL_SMOKE_ENDPOINT` | The exact administrator-reviewed inexpensive FAL endpoint identifier | No |
+| `FAL_WEBHOOK_ENABLED` | `false` for the first local-style generation check; `true` only after the HTTPS callback is ready | No |
+
+#### Add these when production callbacks are ready
+
+| Name | What to enter |
+|---|---|
+| `FAL_WEBHOOK_URL` | Your public HTTPS callback URL, for example `https://studio.example.com/webhooks/fal` |
+| `FAL_WEBHOOK_JWKS_URL` | The current provider-documented verification URL if your selected FAL verification method uses JWKS |
+| `TRUSTED_AUTH_PROXY` | Only the exact value required by your approved authentication proxy configuration |
+
+#### Do not set these for normal production use
+
+| Variable | Why it exists |
+|---|---|
+| `ENABLE_DEV_AUTH` | Local development/testing only; never enable for real customers |
+| `LIVE_FAL_SMOKE` | One-time owner-gated test only |
+| `CONFIRM_LIVE_FAL` | Must be the exact owner confirmation phrase for that test |
+| `FAL_SMOKE_ADMIN` | Only controls whether an authorized administrator may see a provider request ID |
+| `RUN_BROWSER_E2E` | Test environment only |
+| `E2E_BASE_URL` | Test environment only |
+| `CI` | Normally supplied by your CI system; live smoke must stay disabled in CI |
+
+The repository also recognizes `VISUAL_REFERENCE_JSON_LIMIT` as an optional bounded upload/request-size setting. Leave the application default in place unless your operator or developer has chosen a specific lower limit.
+
+**Never create a variable beginning with `VITE_` for `FAL_KEY`.** Client-exposed variables can be sent to browsers. The FAL key must remain a server-only Render secret.
+
+### 5.5 Deploy and open the site
+
+Click **Create Web Service** or **Deploy**. Render will clone the GitHub repository, install dependencies, build the client and server, and start the service. Watch the **Events** or **Logs** panel.
+
+A successful deployment ends with a running service and a public Render URL similar to `https://kdp-kids-book-studio.onrender.com`. Click **Open**.
+
+If the deployment fails, copy the error text into your support/development record without including environment-variable values. Common causes are a missing build command, a missing secret, an invalid start command, or a storage path that is not inside `/var/data`.
+
+## Part 6: Authentication before you create a customer book
+
+Open the deployed URL in a private/incognito browser window. You need to see a sign-in flow or a controlled local/test authentication flow. Then sign in as your test creator.
+
+If you see **Opening your private studio**, wait for the authentication request. If you see **Authentication service unavailable**, the auth integration or proxy is not configured. If you see **Unauthorized**, do not create a project yet; the deployed service does not know who you are.
+
+For a pilot with real customers, require a proper production authentication configuration and test these cases before customer use:
+
+1. Creator A can see Creator A’s project.
+2. Creator B cannot see, edit, download, or delete Creator A’s project.
+3. An unauthenticated browser cannot open a private project URL.
+4. An administrator can access administrator-only operations, while a normal creator cannot.
+5. Logging out removes access to protected pages.
+
+Do not use `ENABLE_DEV_AUTH` as the customer login system.
+
+## Part 7: Create your first book in the browser
+
+### 7.1 Create the project
+
+1. Go to **Projects**.
+2. Click **New Project**.
+3. Enter a name, such as `Garden Friends — 24-page Coloring Book`.
+4. Choose a children’s activity or coloring-book type.
+5. Choose an 8.5 × 11 inch trim size for the first test.
+6. Choose left-to-right reading direction.
+7. Choose a target page count of 24.
+8. Choose the interior paper/ink and bleed settings you intend to test.
+9. Click **Create Project**.
+10. Refresh the page. The project should still be listed.
+
+If the project disappears after refresh, stop. Do not proceed: durable project persistence is not working.
+
+### 7.2 Complete the Book Brief
+
+Open **Book Brief** and enter values like these:
+
+| Field | Example value |
 |---|---|
 | Working title | `Garden Friends` |
 | Subtitle | `A Calm Coloring Adventure` |
-| Intended audience | `Children ages 4–7; simple recognizable objects and large open coloring areas` |
-| Reading direction | `Left to right` |
-| Trim and bleed | `8.5 x 11 in; use the selected bleed mode consistently` |
-| Paper and ink | `White paper; black ink` |
-| Page count | `24` |
-| Visual-style anchors | `Original black line art, smooth thick outlines, sparse interior detail, friendly rounded forms, white background` |
-| Character bible | `Milo the small dog has one floppy ear and a bandana; Pip the bird is round with three feather marks; keep proportions and markings consistent` |
+| Intended audience | `Children ages 4–7; large open coloring areas and simple recognizable objects` |
+| Visual-style anchors | `Original black line art, smooth thick outlines, friendly rounded forms, sparse detail, white background` |
+| Character bible | `Milo is a small dog with one floppy ear and a bandana. Pip is a round bird with three feather marks. Keep their proportions and markings consistent.` |
 | Setting anchors | `Community garden, raised beds, watering can, sunflowers, simple fence` |
-| Negative prompt | `No readable text, no logos, no brands, no copyrighted characters, no trademarked costumes, no photorealism, no gradients, no dense shading, no artist-name style imitation` |
+| Negative prompt | `No readable text, no logos, no brands, no copyrighted characters, no trademarked costumes, no photorealism, no gradients, no dense shading, no living-artist style imitation` |
 
-Save the brief. Navigate away and return. Confirm that the content is still present. This is the remembered creative memory that later page prompts inherit.
+Save the brief. Leave the page, return to the project, and confirm the information remains. This is the “remembered creative memory” that later prompts inherit.
 
-### Stage C: Upload one visual reference
+### 7.3 Create the page plan
 
-Upload a PNG, JPEG, or WebP that you own or have permission to use. A character sheet or rough sketch is ideal. Select a reference kind such as `character_sheet`, `sketch_reference`, `moodboard`, or `cover_reference`. Enter a non-sensitive description if requested.
+Open **Blueprint**. Create an ordered 24-page plan. For the first test, use this structure:
 
-You must confirm the rights statement:
-
-> **I own this reference or have permission to use it.**
-
-The upload should show a private thumbnail, filename, dimensions, and delete/replace controls. Test that an unrelated user cannot view it. Test deleting it and confirm it is no longer available for generation. The application uses the reference to guide original work; it does not authorize copying someone else’s protected work.
-
-### Stage D: Blueprint and page plan
-
-Create an ordered page plan for all 24 pages. Keep front matter and story/activity pages intentional. For a first coloring book, a practical sequence is:
-
-| Pages | Purpose |
+| Pages | Plan |
 |---:|---|
-| 1 | Title or ownership/copyright page |
-| 2 | How to use the coloring book |
+| 1 | Title/copyright page |
+| 2 | How to use this coloring book |
 | 3–22 | Twenty original coloring/activity pages |
-| 23 | Encouragement or completion page |
-| 24 | Intentionally blank or end matter page, only if appropriate |
+| 23 | Completion or encouragement page |
+| 24 | Intentional end matter or blank page if appropriate |
 
-For each generated page, enter a concise scene direction. Examples include `Milo waters a row of sunflowers while Pip sits on the fence`, `Pip finds a large garden snail beside a leaf`, or `Milo and Pip carry a basket of vegetables`. Avoid relying on the broad brief alone; the page direction should identify the subject and action.
+For each artwork page, write one clear scene direction. Example: `Milo waters a row of sunflowers while Pip sits on the fence.` Another example: `Pip finds a large garden snail beside a leaf.`
 
-### Stage E: Compose and approve a page prompt
+Do not type a whole novel into every page direction. The project brief supplies the shared memory; the page direction supplies the unique action.
 
-Select one page plan and compose a prompt. Choose the administrator-approved generation endpoint and an aspect ratio compatible with the intended placement. Add a seed only if you want reproducibility and the selected endpoint supports it.
+### 7.4 Upload one visual reference
 
-The composed prompt should visibly include the inherited book identity, audience, character/setting continuity, the specific page scene, visual style, composition, print-safe requirements, negative constraints, and model-specific parameters. Review the prompt lint warnings. Fix blocking or review-required policy warnings yourself; the system should not silently rewrite your words.
+Prepare a character sheet or sketch that you own or have permission to use. Supported formats are PNG, JPEG, and WebP.
 
-Freeze or approve the prompt version. Confirm that the prompt version records the source snapshot, user edits, endpoint, aspect ratio, seed if present, reference IDs, and content hash.
+In the visual-reference area:
 
-### Stage F: Generate one page through FAL
+1. Click **Upload Reference**.
+2. Choose the file from your computer.
+3. Select a type such as **Character sheet** or **Sketch reference**.
+4. Confirm the statement: **I own this reference or have permission to use it.**
+5. Upload it.
+6. Confirm that a private thumbnail appears.
 
-Choose **Generate** for one page. Do not click repeatedly. The server submits the request to FAL; the browser never calls FAL directly. Confirm that the job moves through a visible state such as Draft, Queued, Generating, Needs Review, Approved, Failed, Cancelled, or Superseded.
+Do not upload a celebrity image, a copyrighted character sheet, another artist’s work without permission, or a file you found online without rights documentation.
 
-When the result arrives, verify all of the following before approval:
+### 7.5 Create a page prompt
 
-- The image belongs to the selected page and project.
-- The prompt version is the immutable version you approved.
-- The selected model endpoint and seed are displayed correctly.
-- The visual reference list is correct.
-- The pixel dimensions and effective DPI are acceptable at the intended print size.
-- The image is not blank, corrupted, an extreme aspect-ratio mismatch, or an unintended duplicate.
-- Coloring-book line contrast and detail density are acceptable to a human reviewer.
+Open **Page Studio** and select one page, such as page 3.
 
-Approve only after visually reviewing the image. If it is wrong, reject it with a reason or regenerate a variation. A variation must create a new asset variant; it must never silently overwrite an approved asset.
+Choose:
 
-### Stage G: Finish the approved interior set
+- The approved model configuration shown by the application.
+- An aspect ratio that matches your intended page placement.
+- A seed only if you want one and the selected endpoint supports it.
+- The approved visual reference.
 
-For the full acceptance test, repeat the page-level review until every page that will enter the interior is approved. You may use deterministic fixture assets for the remaining pages in a test environment, but the final production test must verify that unapproved assets are blocked from export.
+Click **Compose Prompt**. Read the complete prompt. It should include the book identity, audience, character continuity, page scene, visual style, composition, print-safe requirements, negative constraints, and model parameters.
 
-Use the optional queue control only as an explicit bounded action such as **Generate next 2** or **Generate next 3**. Confirm the displayed pending pages before submitting. Never use a bulk unbounded generation operation.
+Review any lint warnings. Do not ignore a warning about copyright, trademarks, child safety, artist imitation, missing subject, vague style, unsupported references, or conflicting print constraints.
 
-### Stage H: Build the interior PDF
+Save and freeze/approve the prompt version. Record its prompt-version ID in your test notes.
 
-Open Interior/Export or the project’s interior export action. Confirm the ordered page list, page types, text blocks, source asset versions, placement geometry, reading direction, trim, bleed, safe margins, mirrored gutters, fonts, and page count.
+### 7.6 Generate one page
 
-The interior export should create:
+Click **Generate** once. Wait for the job status to update. You should see a progression such as **Queued**, **Generating**, and **Needs Review**.
 
-1. A final interior PDF.
-2. A deterministic layout manifest.
-3. A per-page preflight report.
-4. A preview PDF visibly labeled as non-upload output.
+The browser should not contain your FAL key, and the browser should not call the FAL API directly. The server sends the request.
 
-Open the PDF and inspect at least the first page, a representative left-hand page, a representative right-hand page, a full-bleed page, a page with text, a page near the gutter, and the final page. Verify that page ordering is correct for left-to-right reading and that no unreviewed image appears.
+When the image arrives, check:
 
-### Stage I: Build the cover plan and template import
+- It is the correct page.
+- It follows the character bible.
+- It has no unwanted text, logo, brand, or copied character.
+- Its pixels are sufficient for the intended print size.
+- It is not blank, corrupted, stretched, or excessively detailed.
+- The prompt version, endpoint, seed, and reference list are correct.
 
-Open Cover Desk. Enter or confirm:
+Click **Approve** only after you have looked at the image. If it is wrong, click **Reject** and enter a reason, or regenerate a variation. An approved image must never be silently overwritten.
 
-| Cover field | What you must provide |
+### 7.7 Finish the approved page set
+
+For a true end-to-end test, approve the page assets that will be placed into the interior. You may use deterministic fixture assets for the remaining pages in a test environment, but you should not call the package final if the remaining production pages have not been reviewed.
+
+The system permits only small explicit queue actions such as **Generate next 2** or **Generate next 3**. Confirm the displayed pages before submitting.
+
+## Part 8: Build the interior PDF
+
+Open the interior export action. Confirm:
+
+- The page order is correct.
+- Only approved assets are selected.
+- The trim size and bleed match the project.
+- The reading direction is correct.
+- The gutter and safe margins are appropriate.
+- Permitted fonts are selected.
+- Text blocks are intentional.
+- The page count is exactly what you planned.
+
+Create the interior export. It should produce a final interior PDF, a layout manifest, and a preflight report. It may also produce a preview PDF labeled as non-upload output.
+
+Download or open the interior PDF and inspect at least:
+
+1. The first page.
+2. One left-hand page.
+3. One right-hand page.
+4. One page near the gutter.
+5. One page with text.
+6. One full-bleed page, if your book uses bleed.
+7. The final page.
+
+Confirm that artwork is not cut off unexpectedly, text is inside safe margins, page numbers/order are correct, and no unapproved image appears.
+
+## Part 9: Build the cover from the official KDP template
+
+Open **Cover Desk**. Enter or confirm:
+
+| Cover input | What you enter |
 |---|---|
-| Binding | Paperback or the supported binding choice |
-| Trim size | Must match the finalized interior |
-| Final interior page count | Must match the actual interior PDF |
-| Interior ink and paper | Must match the finalized interior |
+| Binding | Paperback |
+| Trim size | Same as final interior |
+| Final interior page count | Actual finalized interior count |
+| Interior paper/ink | Same as final interior |
 | Reading direction | Left to right or right to left |
 | Title | Final cover title |
 | Subtitle | Optional final subtitle |
 | Author | Final author name |
 | Imprint | Optional imprint |
 | Back-cover copy | Final copy, if used |
-| Barcode decision | Supply a barcode or allow KDP to add one, according to your plan |
-| Spine text | Only if permitted by the current page-count rule and safe zone |
-| Front art | Approved focal artwork, with no readable cover text |
-| Back art | Optional approved background/art |
-| Decorative elements | Optional approved elements |
+| Barcode decision | Whether you supply one or let KDP add one |
+| Spine text | Only when the current rule and safe zone permit it |
+| Front art | Approved focal artwork with no readable cover text |
+| Back art | Optional approved art/background |
+| Decorative art | Optional approved elements |
 
-Retrieve the current official KDP calculator/template output using the finalized values. Import the guide asset. Record the source URL, retrieval date, inputs, version, full dimensions, front/back/spine bounds, safe zones, bleed zones, barcode margin, and spine safe zone. Confirm that the calculator inputs match the finalized interior. If the page count changes, stop and refresh the template before composing the cover.
+Now go to the official [KDP paperback cover help page](https://kdp.amazon.com/help/topic/G201953020) and retrieve the current calculator/template output after the page count and print settings are final. The project documentation records the official KDP sources reviewed on August 27, 2026; recheck them before every real book because KDP can change its requirements.
 
-The browser editor is for placement and preview. Final typography and compositing occur deterministically on the server with actual permitted fonts. Art prompts must request no readable cover text, barcode, or spine lettering.
+Import the calculator/template output into Cover Desk. Confirm that the imported page dimensions and safe zones match your final interior. If the page count changes, do not reuse the old cover template. Import a new one.
 
-### Stage J: Compose and inspect the full-wrap cover
+Create the final cover and the labeled preview cover. Inspect:
 
-Generate the single-page final no-guides full-wrap cover PDF and the separate non-upload preview PDF with guides. Inspect the back cover, spine, front cover, barcode exclusion area, bleed edge, and safe zones. Confirm that the final file contains no guides, crop marks, color bars, template instructions, or accidental white edges around intended full bleed.
+- Back cover placement.
+- Spine width and text eligibility.
+- Front cover placement.
+- Barcode exclusion area.
+- Bleed extension.
+- Safe zones.
+- Absence of guides, crop marks, color bars, or template instructions in the final PDF.
+- No unintended white edge around full-bleed artwork.
 
-The spine must remain empty when the page count is below the current supported threshold. The system should warn rather than claim CMYK compliance if the runtime does not reliably perform CMYK conversion.
+## Part 10: Run preflight and create the ZIP
 
-### Stage K: Run KDP-oriented preflight
+Open **Validation** and run the KDP-oriented preflight. Read every blocking issue. The report should identify the page or cover region, expected value, measured value, source asset, and suggested remedy.
 
-Run validation after the interior and cover are final. Review every blocking issue, warning, and informational result. The report should identify the rule, exact page or cover region, expected value, measured value, source asset, and remedy.
+Fix all blocking issues before exporting. A successful status means:
 
-Do not export the final package while any blocking issue remains. A successful result means **ready for manual KDP upload review**, not guaranteed KDP acceptance.
+> **Ready for manual KDP upload review.**
 
-### Stage L: Create and download the ZIP package
+It does not mean KDP has accepted the book.
 
-Open Export Center. Select the completed validation run with zero blocking failures. Confirm that the selected frozen project version is final. Create the package.
+Open **Exports**. Enter or select the validation run, interior export, cover export, frozen project version, listing metadata, approved source image IDs, title, author, description, keywords, categories, language, and subtitle. Confirm the checkbox stating that the selected project version is final.
 
-The ZIP should contain the following structure:
+Click **Create private export package**. Wait for completion. Click **Re-download ZIP**.
+
+Save the ZIP to your computer, usually in your browser’s **Downloads** folder. Open your computer’s Downloads folder, double-click the ZIP, and extract it.
+
+The expected package includes:
 
 ```text
 upload-ready/interior.pdf
@@ -277,71 +398,103 @@ listing/listing-metadata.json
 listing/listing-metadata.csv
 validation/validation-report.pdf
 provenance/provenance-manifest.json
-approved-source-images/<approved-source-files>
+approved-source-images/...
 README.md
 export-manifest.json
 ```
 
-The README must distinguish upload-ready files from preview/reference-only files. Download the ZIP using the owner-scoped, time-limited link. Save it to your computer, open it locally, and verify that it extracts successfully. Open the two upload-ready PDFs and the preview PDF. Confirm that the ZIP does not contain `FAL_KEY`, authorization headers, signed private URLs, temporary provider URLs, or hidden secrets.
+Open the two upload-ready PDFs and the preview PDF from the extracted folder. Keep the README with them. The preview is for your inspection and should not be uploaded as the final interior or cover.
 
-## 7. What to record during the test
+## Part 11: What counts as a successful test
 
-Create a release test record containing the Git commit, migration result, test command and timestamp, project name, frozen project version, validation run ID, export package ID, PDF filenames, ZIP filename, SHA-256 hashes, owner authorization result, and any non-blocking issues. Never record the FAL key or raw provider authorization header. Provider request IDs should be restricted to authorized administrators.
+Your test is successful when you can complete all of the following from a normal browser session:
 
-For every generated asset, record the page, prompt-version ID, endpoint, seed if used, approval decision, reviewer, effective DPI, and any rejection reason. For every cover, record the template source URL, retrieval date, template version/fingerprint, and final interior page count.
+| Check | Pass condition |
+|---|---|
+| Sign-in | A creator can enter a private studio |
+| Durable project | The project survives refresh and server restart |
+| Brief memory | The saved brief and character bible appear in later prompt composition |
+| Reference security | An uploaded reference is private and rights-attested |
+| Prompt version | A prompt is saved, frozen, hashed, and traceable |
+| Secure generation | The browser does not receive or call FAL with the secret |
+| Human approval | An asset must be reviewed before export |
+| Interior | The PDF has the intended page count, ordering, margins, fonts, and approved assets |
+| Cover | The PDF is one-page full-wrap and based on the imported official template |
+| Preflight | There are no blocking findings |
+| Package | The ZIP contains the expected artifacts and opens on your computer |
+| Ownership | Only the project owner can access the download |
+| Secret scan | No key appears in browser traffic, source files, logs, screenshots, database rows, PDFs, manifests, or ZIP files |
 
-## 8. Optional live FAL smoke test
+## Part 12: The owner-gated FAL smoke test
 
-Run this only after an authorized owner explicitly confirms it and after `FAL_KEY` and `FAL_SMOKE_ENDPOINT` are configured:
+Run the smoke test only after an authorized owner explicitly confirms it. In Render, temporarily add the required owner-gated variables:
 
-```bash
-LIVE_FAL_SMOKE=1 \
-CONFIRM_LIVE_FAL=GENERATE_ONE_TEST_IMAGE \
-FAL_SMOKE_ADMIN=0 \
+```text
+LIVE_FAL_SMOKE=1
+CONFIRM_LIVE_FAL=GENERATE_ONE_TEST_IMAGE
+FAL_SMOKE_ADMIN=0
+```
+
+The server must also have `FAL_KEY` and `FAL_SMOKE_ENDPOINT`. Run the command from a secure terminal or approved deployment shell:
+
+```text
 pnpm test:live-fal
 ```
 
-The script must also receive `FAL_KEY` from the server environment. It submits exactly one inexpensive test image, does not retry after timeout, downloads it server-side, and deletes the disposable result. It must not run in CI. If `FAL_SMOKE_ENDPOINT` is missing, the test is not ready; do not substitute a guessed endpoint.
+This test is intentionally not a button in the customer UI. It submits exactly one inexpensive disposable image, does not retry after timeout, and deletes the temporary result. Remove the owner-gated variables after the test. Do not run it in CI.
 
-## 9. Optional browser acceptance test
+If the application says `FAL_SMOKE_ENDPOINT is not configured`, stop and obtain the exact current endpoint identifier from the administrator-reviewed FAL model documentation. Never guess it.
 
-The browser suite is not the same as the deterministic server suite. To run it, install the browser binary, start an authenticated test server, provide a safe test identity, set `RUN_BROWSER_E2E=1`, and set `E2E_BASE_URL` to that test server. Then run:
+## Part 13: Browser acceptance testing
 
-```bash
+The browser acceptance test is a separate technical check. It needs a test server, a test login, and the Playwright browser installed. It is not required for you to create a book manually in the browser, but it is useful before inviting customers.
+
+The technical operator should install the browser, configure `RUN_BROWSER_E2E=1` and `E2E_BASE_URL`, and run:
+
+```text
 pnpm exec playwright install chromium
-RUN_BROWSER_E2E=1 E2E_BASE_URL=http://127.0.0.1:3000 pnpm test:e2e
+pnpm test:e2e
 ```
 
-Do not point this at a real customer production account. The current browser specification checks the creator route progression, desktop/mobile surface, accessibility scan, and owner-download messaging. A true authenticated run requires the test server’s login/session setup to be completed outside this chat.
+Do not point it at a real customer account. If the browser is not installed, the test cannot launch; that is a test-environment problem, not a customer-book problem.
 
-## 10. Troubleshooting
+## Part 14: Troubleshooting in plain English
 
-| Symptom | Likely cause | Correct action |
+| What you see | What it means | What to do |
 |---|---|---|
-| `FAL_KEY is absent` | The server process cannot see the deployment secret | Add it to the server secret manager and restart; never add it to client code. |
-| `FAL_SMOKE_ENDPOINT is not configured` | No reviewed endpoint identifier is set | Choose and review the current official FAL model documentation, then configure the identifier. |
-| Webhook rejected | Missing HTTPS, invalid signature, malformed body, replay, or request-ID conflict | Check the public URL and provider verification setup; use one selected job reconciliation only. |
-| Reference upload rejected | Wrong MIME type, corrupt file, excessive pixels/bytes, or missing rights attestation | Use PNG/JPEG/WebP within configured limits and confirm permission. |
-| Prompt cannot be submitted | Prompt is not frozen/approved, model is inactive, or policy review is blocking | Correct the prompt or obtain human review; do not bypass the gate. |
-| Generation is stuck | Provider callback missed or provider request remains active | Administrator selects that one job and runs one reconciliation; do not requeue all. |
-| Asset cannot enter PDF | Asset is unapproved or has a blocking quality result | Review, regenerate, or approve a corrected asset. |
-| Cover is invalid after page-count change | Imported KDP template no longer matches the interior | Import a fresh official template and confirm the new inputs. |
-| Preflight blocks export | One or more KDP-oriented blocking rules fail | Follow the exact remedy for the named page or cover region, then rerun validation. |
-| ZIP download expired | Time-limited link or package retention window expired | Reopen Export Center as the project owner and issue a new valid link if the package is retained. |
-| Browser E2E cannot launch | Playwright browser binary is missing | Run `pnpm exec playwright install chromium` in the test environment. |
+| The site will not open | Deployment failed or service is stopped | In Render, open **Events** and **Logs**. Look for the first error. |
+| The site opens but says Unauthorized | Authentication is not connected | Stop; configure the approved production login/proxy integration. |
+| Project disappears after refresh | Database path is not persistent or migration failed | Check `DATABASE_PATH=/var/data/app.db` and the Render disk mount. |
+| Upload fails | File is wrong type, too large, corrupt, or lacks rights confirmation | Use PNG/JPEG/WebP within limits and confirm permission. |
+| Generation button does nothing | Prompt is not approved/frozen, model is inactive, or policy review blocks it | Read the displayed message and correct the saved data. |
+| Generation remains queued | Callback may be missed or provider is still working | An administrator should reconcile one selected job, not retry all jobs. |
+| Interior export is blocked | An asset is unapproved or a quality rule failed | Review the named page and approve a corrected asset. |
+| Cover is wrong after page-count change | The imported KDP template is stale | Retrieve and import a new official template. |
+| Preflight is red | At least one blocking rule failed | Fix the exact page/region named in the report and rerun it. |
+| ZIP link expired | The private link reached its expiry | Reopen Exports as the owner and request a valid re-download if retained. |
+| FAL smoke test refuses to run | An owner gate or endpoint is missing | Confirm the exact variables and reviewed endpoint; do not weaken the gate. |
+| Render service restarts and files vanish | The disk is missing or paths point outside the disk | Check the persistent disk mount and both path variables. |
 
-## 11. Definition of a successful first customer test
+## Part 15: Who should do what
 
-Your first customer-style test is successful when a test creator can sign in, create and refresh a durable project, save a brief, upload a rights-attested reference, see the brief and character memory inherited into a prompt, create and approve a page-level generation, assemble only approved assets, produce a valid interior PDF and template-based single-page cover PDF, pass KDP-oriented preflight with no blocking findings, create a private ZIP, download it as the owner, extract it on a local computer, and verify the expected PDFs and manifest.
+As the business owner, you should supply the book concept, rights confirmations, creative brief, final metadata, cover inputs, KDP account, and final human approval. You should own the GitHub, Render, FAL, domain, and KDP accounts.
 
-It is not successful if a secret appears in browser traffic, client source, logs, screenshots, database rows, PDFs, manifests, ZIP files, or error responses. It is not successful if the system claims that KDP acceptance or legal clearance is guaranteed.
+A technical operator or developer should configure the Render service, persistent disk, authentication integration, HTTPS callback, server-only secrets, deployment variables, backup policy, and browser acceptance environment. They should never ask you to paste `FAL_KEY` into the browser or into a normal document.
 
-## 12. External references
+A book-production reviewer should inspect every generated page, the interior PDF, the cover PDF, the preflight report, and the extracted ZIP. You can perform this role yourself for the first book.
 
-[1]: https://kdp.amazon.com/help/topic/G201953020 "Amazon KDP paperback cover requirements"
-[2]: https://kdp.amazon.com/help/topic/G201857950 "Amazon KDP cover design requirements"
-[3]: https://kdp.amazon.com/help/topic/G5HDYGP4BXLX4RUW "Amazon KDP barcode requirements"
-[4]: https://kdp.amazon.com/help/topic/G200672390 "Amazon KDP metadata guidance"
-[5]: https://kdp.amazon.com/help/topic/G201097560 "Amazon KDP publishing content guidance"
-[6]: https://kdp.amazon.com/help/topic/G201298500 "Amazon KDP AI-generated content guidance"
-[7]: https://kdp.amazon.com/help/topic/G201834170 "Amazon KDP ISBN guidance"
+## Part 16: Your first-week checklist
+
+On day one, create the business-owned GitHub, Render, FAL, and KDP accounts. On day two, deploy the Render service with the persistent disk and confirm the site opens. On day three, confirm authentication and create the 24-page test project. On day four, complete the brief, upload one rights-attested reference, generate and approve one page, and verify the remembered prompt context. On day five, finish the approved fixture set and create the interior. On day six, retrieve the official KDP template, create the cover, run preflight, and correct blocking errors. On day seven, create the ZIP, download it to your computer, extract it, inspect the PDFs, and record the artifact hashes and test result.
+
+Do not invite paying customers until you can complete the workflow with a clean test account, verify owner-only access, confirm private storage, and explain the recovery procedure for a failed generation, stale cover template, failed preflight, or expired download.
+
+## References
+
+[1]: https://vercel.com/kb/guide/is-sqlite-supported-in-vercel "Vercel: Is SQLite supported in Vercel? Retrieved August 27, 2026."
+[2]: https://render.com/docs/disks "Render: Persistent Disks. Retrieved August 27, 2026."
+[3]: https://render.com/docs/background-workers "Render: Background Workers. Retrieved August 27, 2026."
+[4]: https://kdp.amazon.com/help/topic/G201953020 "Amazon KDP: Paperback cover requirements. Project source reviewed August 27, 2026."
+[5]: https://kdp.amazon.com/help/topic/G201857950 "Amazon KDP: Cover design requirements. Project source reviewed August 27, 2026."
+[6]: https://kdp.amazon.com/help/topic/G5HDYGP4BXLX4RUW "Amazon KDP: Barcode requirements. Project source reviewed August 27, 2026."
+[7]: https://kdp.amazon.com/help/topic/G200672390 "Amazon KDP: Metadata guidance. Project source reviewed August 27, 2026."
