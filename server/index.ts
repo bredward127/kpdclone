@@ -2,8 +2,11 @@ import express from "express";
 import path from "node:path";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { clearSession, getCurrentUser, isDevAuthEnabled, setSession } from "./auth";
+import { assertFalConfiguredForProduction } from "./fal";
 import { createDatabase } from "./db";
 import { createAppRouter } from "./routers";
+
+assertFalConfiguredForProduction();
 
 const db = createDatabase();
 const appRouter = createAppRouter(db);

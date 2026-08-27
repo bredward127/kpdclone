@@ -3,6 +3,9 @@ import crypto from "node:crypto";
 import type { Response } from "express";
 import { z } from "zod";
 import { clearSession } from "./auth";
+import { isFalAdministrator } from "./fal-admin";
+import { getFalConnectionStatus, type FalConnectionStatus } from "./fal";
+import { falModelRegistry } from "./fal-models";
 import { createProject, deleteProjectForUser, getProjectForUser, listProjects, updateProjectForUser, upsertUser, type AppDatabase, type UserRecord } from "./db";
 
 export type AppContext = {
@@ -36,13 +39,36 @@ const projectInput = z.object({
   brief: z.string().trim().max(5000).default(""),
 });
 
-export function createAppRouter(db: AppDatabase) {
+export function createAppRouter(
+  db: AppDatabase,
+  options: {
+    falStatus?: () => Promise<FalConnectionStatus>;
+    falAdminEnv?: NodeJS.ProcessEnv;
+  } = {},
+) {
+  const falStatus = options.falStatus ?? (() => getFalConnectionStatus());
+  const falAdminEnv = options.falAdminEnv ?? process.env;
+
   return router({
     auth: router({
       me: publicProcedure.query(({ ctx }) => ctx.user),
       logout: publicProcedure.mutation(({ ctx }) => {
         if (ctx.res) clearSession(ctx.res);
         return { ok: true };
+      }),
+      fal: protectedProcedure
+        .meta({ description: "Administrator-only masked FAL connection status" })
+        .mutation(async ({ ctx }) => {
+          if (!isFalAdministrator(ctx.user.id, falAdminEnv)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "FAL connection status is restricted to administrators." });
+          }
+          return falStatus();
+        }),
+      falModels: protectedProcedure.query(({ ctx }) => {
+        if (!isFalAdministrator(ctx.user.id, falAdminEnv)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "FAL model configuration is restricted to administrators." });
+        }
+        return falModelRegistry.map(({ allowedInputSchema: _schema, ...model }) => model);
       }),
     }),
     project: router({

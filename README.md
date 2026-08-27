@@ -13,7 +13,11 @@ Authentication supports two deployment modes:
 1. In production, place the server behind a trusted authentication proxy and set `TRUSTED_AUTH_PROXY=true`. The proxy must authenticate the request and inject `x-authenticated-user-id`, with optional name and email headers. The application persists only the current user’s identity and uses project ownership checks for every project operation.
 2. In non-production environments, `/auth/dev-login` issues a signed, HTTP-only development session cookie. Set `SESSION_SECRET` for realistic local testing. This route is disabled when `NODE_ENV=production`.
 
-Set `SESSION_SECRET` in deployment secrets. No FAL integration or FAL key is included in this phase.
+Set `SESSION_SECRET` and `FAL_KEY` in deployment secrets. Set `FAL_ADMIN_USER_IDS` to a comma-separated allowlist of authenticated user IDs allowed to run the masked FAL connection check and inspect the reviewed model registry. The server validates `FAL_KEY` at production startup and fails with an actionable operator message if it is absent. The FAL status action performs only a bounded account-safe model-list request and returns a masked status; it never returns the key. The client never receives or stores the key.
+
+The current registry contains `fal-ai/gpt-image-1.5` based on the reviewed official documentation recorded in `docs-fal-model-review.md`. It is inactive by default, and its pricing display fields are nullable because the reviewed page did not provide a stable provider price. An administrator must explicitly review the current official documentation before activating any endpoint.
+
+No FAL model generation call is included in this phase.
 
 ## Routes
 
