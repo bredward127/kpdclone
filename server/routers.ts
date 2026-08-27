@@ -5,7 +5,7 @@ import { z } from "zod";
 import { clearSession } from "./auth";
 import { isFalAdministrator } from "./fal-admin";
 import { getFalConnectionStatus, type FalConnectionStatus } from "./fal";
-import { createBookBrief, createPagePlan, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, insertGenerationJob, listAuditEvents, listExportPackages, listPagePlans, transitionAssetStatus, transitionGenerationJob, updatePageApproval } from "./db-studio";
+import { createBookBrief, createPagePlan, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, getGeneratedAssetForUser, getGenerationJobForUser, insertGenerationJob, listAssetVariantsForUser, listAuditEvents, listExportPackages, listGeneratedAssetsForPage, listGenerationJobsForUser, listPagePlans, reviewGeneratedAsset, transitionAssetStatus, transitionGenerationJob, updatePageApproval } from "./db-studio";
 import { lifecycleStatuses, pageApprovalStates } from "../shared/studio";
 import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
 import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset } from "./reference-assets";
@@ -13,7 +13,7 @@ import { getReferenceValidationLimits } from "./reference-validation";
 import { composePromptFromSavedProject, createPromptVersion, freezePromptVersion, getPromptVersionForUser, listPromptVersions, restorePromptVersion } from "./prompt-composer";
 import { createFalGenerationService, type FalGenerationService } from "./fal-generation";
 import { getFalQueueClient } from "./fal-queue";
-import { falModelRegistry } from "./fal-models";
+import { falModelRegistry, listSelectableFalModels } from "./fal-models";
 import { createProject, deleteProjectForUser, getProjectForUser, listProjects, updateProjectForUser, upsertUser, type AppDatabase, type UserRecord } from "./db";
 
 export type AppContext = {
@@ -185,9 +185,27 @@ export function createAppRouter(
         }),
       }),
       generationJobs: router({
+        list: protectedProcedure.input(projectIdInput.extend({ pagePlanId: z.string().min(1).optional() })).query(async ({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          const jobs = listGenerationJobsForUser(db, ctx.user.id, input.projectId, input.pagePlanId);
+          const assets = input.pagePlanId ? listGeneratedAssetsForPage(db, ctx.user.id, input.projectId, input.pagePlanId) : [];
+          const assetsWithAccess = await Promise.all(assets.map(async (asset) => ({ ...asset, accessUrl: await storage.createAccessUrl(asset.storageReference, 900) })));
+          return { jobs, assets: assetsWithAccess, variants: assets.flatMap((asset) => listAssetVariantsForUser(db, ctx.user.id, input.projectId, asset.id)) };
+        }),
+        models: protectedProcedure.query(() => listSelectableFalModels()),
+        reviewAsset: protectedProcedure.input(z.object({ assetId: z.string().min(1), decision: z.enum(["approved", "rejected", "archived"]), rejectionReason: z.string().max(2_000).optional() })).mutation(({ ctx, input }) => {
+          try {
+            const asset = reviewGeneratedAsset(db, ctx.user.id, input.assetId, input);
+            if (!asset) throw new TRPCError({ code: "NOT_FOUND", message: "Generated asset not found." });
+            return asset;
+          } catch (error) {
+            if (error instanceof TRPCError) throw error;
+            throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "The asset review could not be saved." });
+          }
+        }),
         submit: protectedProcedure.input(z.object({
           projectId: z.string().min(1), pagePlanId: z.string().min(1), promptVersionId: z.string().min(1),
-          generationModel: z.string().min(1).max(200), generationEndpoint: z.string().min(1).max(300), aspectRatio: z.string().regex(/^\\d+:\\d+$/), seed: z.number().int().optional(), referenceAssetIds: z.array(z.string().min(1)).max(24), expectedOutputConstraints: z.record(z.string(), z.unknown()).default({}),
+          generationModel: z.string().min(1).max(200), generationEndpoint: z.string().min(1).max(300), aspectRatio: z.string().regex(/^\\d+:\\d+$/), seed: z.number().int().optional(), referenceAssetIds: z.array(z.string().min(1)).max(24), expectedOutputConstraints: z.record(z.string(), z.unknown()).default({}), idempotencyKey: z.string().min(8).max(200).optional(), requestKind: z.enum(["initial", "variation", "prompt_edit"]).default("initial"), sourceAssetId: z.string().min(1).optional(),
         })).mutation(async ({ ctx, input }) => {
           if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
           try { return await generationService.submit(db, ctx.user.id, input); }
@@ -207,6 +225,18 @@ export function createAppRouter(
           if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
           try { return await generationService.retry(db, ctx.user.id, input.jobId); }
           catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Generation retry could not be submitted safely." }); }
+        }),
+        queueNext: protectedProcedure.input(z.object({
+          projectId: z.string().min(1), count: z.union([z.literal(2), z.literal(3)]), confirmed: z.literal(true),
+          requests: z.array(z.object({ pagePlanId: z.string().min(1), promptVersionId: z.string().min(1), generationModel: z.string().min(1).max(200), generationEndpoint: z.string().min(1).max(300), aspectRatio: z.string().regex(/^\\d+:\\d+$/), seed: z.number().int().optional(), referenceAssetIds: z.array(z.string().min(1)).max(24), expectedOutputConstraints: z.record(z.string(), z.unknown()).default({}), idempotencyKey: z.string().min(8).max(200) })).min(2).max(3),
+        })).mutation(async ({ ctx, input }) => {
+          if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
+          if (input.requests.length !== input.count) throw new TRPCError({ code: "BAD_REQUEST", message: "The confirmed queue count does not match the pending page selection." });
+          try {
+            const jobs = [] as Array<Awaited<ReturnType<typeof generationService.submit>>>;
+            for (const request of input.requests) jobs.push(await generationService.submit(db, ctx.user.id, { ...request, projectId: input.projectId, requestKind: "initial" }));
+            return { confirmed: true, jobs };
+          } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "The bounded page queue could not be submitted." }); }
         }),
         create: protectedProcedure.input(projectIdInput.extend({
           pagePlanId: z.string().min(1).optional(),

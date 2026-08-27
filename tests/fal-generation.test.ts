@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createDatabase, createProject, upsertUser } from "../server/db";
-import { createBookBrief, createPagePlan, getGeneratedAssetForUser, getGenerationJobForUser } from "../server/db-studio";
+import { createBookBrief, createPagePlan, getGeneratedAssetForUser, getGenerationJobForUser, listAssetVariantsForUser, reviewGeneratedAsset } from "../server/db-studio";
 import { createPromptVersion, composePromptFromSavedProject, freezePromptVersion } from "../server/prompt-composer";
 import { createFalGenerationService, type GenerationAdapter } from "../server/fal-generation";
 import { FalProviderError, verifyFalWebhookSignature } from "../server/fal-queue";
@@ -52,7 +52,7 @@ async function makeJob() {
   const fixture = makeFixture();
   const { adapter, statuses } = makeAdapter();
   const { storage } = makeStorage();
-  const service = createFalGenerationService({ adapter, storage, webhookUrl: "https://studio.example.com/api/fal/webhook" });
+  const service = createFalGenerationService({ adapter, storage, webhookUrl: "https://studio.example.com/api/fal/webhook", modelApproval: () => true });
   const job = await service.submit(fixture.db, owner.id, { ...fixture.input, promptVersionId: fixture.prompt.id, expectedOutputConstraints: { mimeTypes: ["image/png"], maxPixels: 25_000_000 } });
   return { ...fixture, adapter, statuses, storage, service, job };
 }
@@ -61,7 +61,7 @@ describe("FAL queue generation contract", () => {
   it("rejects drafts, validates ownership, submits frozen prompts, and persists the provider request immediately", async () => {
     const draft = makeFixture();
     const { adapter, storage } = makeAdapterAndStorage();
-    const service = createFalGenerationService({ adapter, storage });
+    const service = createFalGenerationService({ adapter, storage, modelApproval: () => true });
     const draftPrompt = createPromptVersion(draft.db, owner.id, composePromptFromSavedProject(draft.db, owner.id, draft.input), draft.input);
     await expect(service.submit(draft.db, owner.id, { ...draft.input, promptVersionId: draftPrompt.id, expectedOutputConstraints: {} })).rejects.toThrow("not frozen");
     await expect(service.submit(draft.db, stranger.id, { ...draft.input, promptVersionId: draft.prompt.id, expectedOutputConstraints: {} })).rejects.toThrow("Project not found");
@@ -143,5 +143,45 @@ describe("FAL webhook verification contract", () => {
     await expect(verifyFalWebhookSignature(body, headers, { fetchImpl, jwksUrl: "https://jwks.example/test" })).resolves.toBe(true);
     await expect(verifyFalWebhookSignature(body, { ...headers, "x-fal-webhook-signature": "not-hex" }, { fetchImpl, jwksUrl: "https://jwks.example/test" })).resolves.toBe(false);
     await expect(verifyFalWebhookSignature(body, { ...headers, "x-fal-webhook-timestamp": String(Number(timestamp) - 301) }, { fetchImpl, jwksUrl: "https://jwks.example/test" })).resolves.toBe(false);
+  });
+});
+
+
+describe("Page Studio controls", () => {
+  it("returns the same local job for a duplicate idempotency key", async () => {
+    const fixture = makeFixture();
+    const { adapter, storage } = makeAdapterAndStorage();
+    const service = createFalGenerationService({ adapter, storage, modelApproval: () => true });
+    const request = { ...fixture.input, promptVersionId: fixture.prompt.id, expectedOutputConstraints: {}, idempotencyKey: "same-page-click-key" };
+    const first = await service.submit(fixture.db, owner.id, request);
+    const second = await service.submit(fixture.db, owner.id, request);
+    expect(second).toEqual(first);
+    expect(adapter.submit).toHaveBeenCalledOnce();
+  });
+
+  it("enforces per-project concurrency before a second page job is accepted", async () => {
+    const fixture = makeFixture();
+    const { adapter, storage } = makeAdapterAndStorage();
+    const service = createFalGenerationService({ adapter, storage, modelApproval: () => true, maxActivePerUser: 3, maxActivePerProject: 1 });
+    await service.submit(fixture.db, owner.id, { ...fixture.input, promptVersionId: fixture.prompt.id, expectedOutputConstraints: {}, idempotencyKey: "first-page-key" });
+    await expect(service.submit(fixture.db, owner.id, { ...fixture.input, promptVersionId: fixture.prompt.id, expectedOutputConstraints: {}, idempotencyKey: "second-page-key" })).rejects.toThrow(/per-project generation concurrency limit/i);
+  });
+
+  it("requires an approved source asset and creates a new alternate variant without overwriting it", async () => {
+    const fixture = await makeJob();
+    const completed = await fixture.service.processWebhook(fixture.db, { request_id: fixture.job.falRequestId, status: "OK", payload: { images: [{ url: "https://fal.media/files/original.png", content_type: "image/png" }] } });
+    const sourceAsset = getGeneratedAssetForUser(fixture.db, owner.id, completed.assetId!)!;
+    await expect(fixture.service.submit(fixture.db, owner.id, { ...fixture.input, promptVersionId: fixture.prompt.id, expectedOutputConstraints: {}, requestKind: "variation", sourceAssetId: sourceAsset.id, idempotencyKey: "variation-before-approval" })).rejects.toThrow(/approved asset/i);
+    reviewGeneratedAsset(fixture.db, owner.id, sourceAsset.id, { decision: "approved" });
+    const variation = await fixture.service.submit(fixture.db, owner.id, { ...fixture.input, promptVersionId: fixture.prompt.id, expectedOutputConstraints: {}, requestKind: "variation", sourceAssetId: sourceAsset.id, idempotencyKey: "variation-after-approval" });
+    await fixture.service.processWebhook(fixture.db, { request_id: variation.falRequestId, status: "OK", payload: { images: [{ url: "https://fal.media/files/variation.png", content_type: "image/png" }] } });
+    expect(getGeneratedAssetForUser(fixture.db, owner.id, sourceAsset.id)?.status).toBe("approved");
+    expect(listAssetVariantsForUser(fixture.db, owner.id, fixture.project.id).some((variant) => variant.sourceAssetId === sourceAsset.id && variant.variantKind === "alternate")).toBe(true);
+  });
+
+  it("does not allow another user to cancel an owned job", async () => {
+    const fixture = await makeJob();
+    await expect(fixture.service.cancel(fixture.db, stranger.id, fixture.job.localJobId)).rejects.toThrow(/not found/i);
+    expect(fixture.adapter.cancel).not.toHaveBeenCalled();
   });
 });

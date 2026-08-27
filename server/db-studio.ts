@@ -144,6 +144,10 @@ export type GenerationJobRecord = {
   cancellationRequestedAt: string | null;
   webhookProcessedAt: string | null;
   providerCompletedAt: string | null;
+  idempotencyKey: string | null;
+  requestKind: "initial" | "variation" | "prompt_edit";
+  sourceAssetId: string | null;
+  userCancelledAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -191,6 +195,8 @@ export function getGenerationJobForUser(db: AppDatabase, userId: string, jobId: 
                 queued_at AS queuedAt, started_at AS startedAt, completed_at AS completedAt,
                 cancellation_requested_at AS cancellationRequestedAt,
                 webhook_processed_at AS webhookProcessedAt, provider_completed_at AS providerCompletedAt,
+                idempotency_key AS idempotencyKey, request_kind AS requestKind,
+                source_asset_id AS sourceAssetId, user_cancelled_at AS userCancelledAt,
                 created_at AS createdAt, updated_at AS updatedAt
          FROM generation_jobs WHERE id = ? AND user_id = ?`,
       )
@@ -458,4 +464,56 @@ export function listAuditEvents(db: AppDatabase, userId: string, projectId: stri
             created_at AS createdAt, updated_at AS updatedAt
      FROM audit_events WHERE user_id = ? AND project_id = ? ORDER BY created_at DESC`,
   ).all(userId, projectId) as Array<Record<string, unknown>>;
+}
+
+export function listGenerationJobsForUser(db: AppDatabase, userId: string, projectId: string, pagePlanId?: string): GenerationJobRecord[] {
+  const rows = db.prepare(`SELECT id FROM generation_jobs WHERE user_id = ? AND project_id = ? ${pagePlanId ? "AND page_plan_id = ?" : ""} ORDER BY created_at DESC`).all(...(pagePlanId ? [userId, projectId, pagePlanId] : [userId, projectId])) as Array<{ id: string }>;
+  return rows.map((row) => getGenerationJobForUser(db, userId, row.id)).filter((row): row is GenerationJobRecord => Boolean(row));
+}
+
+export function listGeneratedAssetsForPage(db: AppDatabase, userId: string, projectId: string, pagePlanId: string): GeneratedAssetRecord[] {
+  const rows = db.prepare(`SELECT id FROM generated_assets WHERE user_id = ? AND project_id = ? AND page_plan_id = ? ORDER BY created_at DESC`).all(userId, projectId, pagePlanId) as Array<{ id: string }>;
+  return rows.map((row) => getGeneratedAssetForUser(db, userId, row.id)).filter((row): row is GeneratedAssetRecord => Boolean(row));
+}
+
+export type AssetVariantRecord = {
+  id: string;
+  userId: string;
+  projectId: string;
+  generatedAssetId: string;
+  sourceAssetId: string | null;
+  variantKind: string;
+  storageReference: string;
+  mimeType: string;
+  widthPx: number | null;
+  heightPx: number | null;
+  byteSize: number | null;
+  checksumSha256: string | null;
+  status: LifecycleStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function listAssetVariantsForUser(db: AppDatabase, userId: string, projectId: string, generatedAssetId?: string): AssetVariantRecord[] {
+  const rows = db.prepare(`SELECT id, user_id AS userId, project_id AS projectId, generated_asset_id AS generatedAssetId, source_asset_id AS sourceAssetId, variant_kind AS variantKind, storage_reference AS storageReference, mime_type AS mimeType, width_px AS widthPx, height_px AS heightPx, byte_size AS byteSize, checksum_sha256 AS checksumSha256, status, created_at AS createdAt, updated_at AS updatedAt FROM asset_variants WHERE user_id = ? AND project_id = ? ${generatedAssetId ? "AND generated_asset_id = ?" : ""} ORDER BY created_at DESC`).all(...(generatedAssetId ? [userId, projectId, generatedAssetId] : [userId, projectId])) as AssetVariantRecord[];
+  return rows;
+}
+
+export function reviewGeneratedAsset(db: AppDatabase, userId: string, assetId: string, input: { decision: "approved" | "rejected" | "archived"; rejectionReason?: string }): GeneratedAssetRecord | null {
+  const current = getGeneratedAssetForUser(db, userId, assetId);
+  if (!current) return null;
+  if (input.decision === "rejected" && !input.rejectionReason?.trim()) throw new Error("A rejection reason is required.");
+  const nextStatus: LifecycleStatus = input.decision === "rejected" ? "needs_review" : input.decision;
+  if (!canTransition(current.status, nextStatus)) throw new Error(`Invalid asset review transition from ${current.status} to ${nextStatus}`);
+  const now = new Date().toISOString();
+  db.transaction(() => {
+    db.prepare(`UPDATE generated_assets SET status = ?, rejection_reason = ?, updated_at = ? WHERE id = ? AND user_id = ?`).run(nextStatus, input.decision === "rejected" ? input.rejectionReason!.trim() : null, now, assetId, userId);
+    createAuditEvent(db, userId, { projectId: current.projectId, actorUserId: userId, entityType: "generated_asset", entityId: assetId, eventType: input.decision === "approved" ? "asset_approved" : input.decision === "rejected" ? "asset_rejected" : "asset_archived", fromStatus: current.status, toStatus: nextStatus, metadataJson: JSON.stringify({ rejectionReason: input.rejectionReason ?? null }) });
+  })();
+  return getGeneratedAssetForUser(db, userId, assetId);
+}
+
+export function getGeneratedAssetByStorageReferenceForUser(db: AppDatabase, userId: string, storageReference: string): GeneratedAssetRecord | null {
+  const row = db.prepare(`SELECT id FROM generated_assets WHERE user_id = ? AND storage_reference = ? AND status != 'archived' LIMIT 1`).get(userId, storageReference) as { id: string } | undefined;
+  return row ? getGeneratedAssetForUser(db, userId, row.id) : null;
 }

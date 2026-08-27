@@ -10,6 +10,7 @@ import { createLocalPrivateStorage } from "./storage";
 import { createDatabase } from "./db";
 import { createAppRouter } from "./routers";
 import { getReferenceAssetByStorageKeyForUser } from "./reference-assets";
+import { getGeneratedAssetByStorageReferenceForUser } from "./db-studio";
 import { readPrivateStorageBytes, verifyStorageAccessSignature } from "./storage";
 
 assertFalConfiguredForProduction();
@@ -82,6 +83,18 @@ app.get("/auth/dev-login", (req, res) => {
 app.post("/auth/logout", (_req, res) => {
   clearSession(res);
   res.status(204).end();
+});
+
+app.get("/api/generated-assets/file", async (req, res) => {
+  const key = typeof req.query.key === "string" ? req.query.key : "";
+  const expires = typeof req.query.expires === "string" ? Number(req.query.expires) : NaN;
+  const signature = typeof req.query.signature === "string" ? req.query.signature : "";
+  const user = getCurrentUser(req, db);
+  if (!user || !verifyStorageAccessSignature(key, expires, signature)) { res.status(401).json({ message: "Generated asset access is unauthorized." }); return; }
+  const asset = getGeneratedAssetByStorageReferenceForUser(db, user.id, key);
+  if (!asset) { res.status(404).json({ message: "Generated asset not found." }); return; }
+  try { const bytes = await readPrivateStorageBytes(asset.storageReference); res.setHeader("Cache-Control", "private, max-age=300"); res.type(asset.mimeType).send(bytes); }
+  catch { res.status(404).json({ message: "Generated asset not found." }); }
 });
 
 app.get("/api/reference-assets/file", async (req, res) => {

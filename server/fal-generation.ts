@@ -3,6 +3,7 @@ import type { AppDatabase } from "./db";
 import { getProjectForUser } from "./db";
 import { getGenerationJobForUser, getGeneratedAssetForUser } from "./db-studio";
 import { getPromptVersionForUser } from "./prompt-composer";
+import { getFalModel } from "./fal-models";
 import { validateReferenceImage, getReferenceValidationLimits } from "./reference-validation";
 import type { PrivateStorage } from "./storage";
 import { FalProviderError, type FalImageOutput, type FalQueueStatus, type FalWebhookPayload } from "./fal-queue";
@@ -44,11 +45,12 @@ function setJob(db: AppDatabase, userId: string, jobId: string, values: Record<s
   db.prepare(`UPDATE generation_jobs SET ${assignments}, updated_at = @updatedAt WHERE id = @jobId AND user_id = @userId`).run({ ...values, updatedAt: now(), jobId, userId });
 }
 
-function findJobByFalRequestId(db: AppDatabase, falRequestId: string): { id: string; userId: string; projectId: string; pagePlanId: string | null; promptVersionId: string | null; generationEndpoint: string; localStatus: LocalGenerationStatus; webhookProcessedAt: string | null; expectedOutputConstraintsJson: string; retryCount: number } | null {
+function findJobByFalRequestId(db: AppDatabase, falRequestId: string): { id: string; userId: string; projectId: string; pagePlanId: string | null; promptVersionId: string | null; generationEndpoint: string; localStatus: LocalGenerationStatus; webhookProcessedAt: string | null; expectedOutputConstraintsJson: string; retryCount: number; requestKind: "initial" | "variation" | "prompt_edit"; sourceAssetId: string | null } | null {
   return db.prepare(`SELECT id, user_id AS userId, project_id AS projectId, page_plan_id AS pagePlanId,
       prompt_version_id AS promptVersionId, generation_endpoint AS generationEndpoint,
       local_status AS localStatus, webhook_processed_at AS webhookProcessedAt,
-      expected_output_constraints_json AS expectedOutputConstraintsJson, retry_count AS retryCount
+      expected_output_constraints_json AS expectedOutputConstraintsJson, retry_count AS retryCount,
+      request_kind AS requestKind, source_asset_id AS sourceAssetId
       FROM generation_jobs WHERE fal_request_id = ?`).get(falRequestId) as ReturnType<typeof findJobByFalRequestId>;
 }
 
@@ -64,11 +66,21 @@ function extractFirstImage(payload: Record<string, unknown>): FalImageOutput {
   return { url: value.url as string, content_type: typeof value.content_type === "string" ? value.content_type : undefined, file_name: typeof value.file_name === "string" ? value.file_name : undefined, width: typeof value.width === "number" ? value.width : undefined, height: typeof value.height === "number" ? value.height : undefined };
 }
 
-export function createFalGenerationService(dependencies: { adapter: GenerationAdapter; storage: PrivateStorage; webhookUrl?: string; maxOutputBytes?: number; validationLimits?: ReturnType<typeof getReferenceValidationLimits> }) {
+export function createFalGenerationService(dependencies: { adapter: GenerationAdapter; storage: PrivateStorage; webhookUrl?: string; maxOutputBytes?: number; validationLimits?: ReturnType<typeof getReferenceValidationLimits>; maxActivePerUser?: number; maxActivePerProject?: number; modelApproval?: (endpointId: string) => boolean }) {
   const maxOutputBytes = dependencies.maxOutputBytes ?? dependencies.validationLimits?.maxBytes ?? getReferenceValidationLimits().maxBytes;
   const validationLimits = dependencies.validationLimits ?? getReferenceValidationLimits();
+  const maxActivePerUser = dependencies.maxActivePerUser ?? 3;
+  const maxActivePerProject = dependencies.maxActivePerProject ?? 2;
+  const modelApproval = dependencies.modelApproval ?? ((endpointId: string) => getFalModel(endpointId)?.active === true);
 
-  async function ingestResult(db: AppDatabase, job: { id: string; userId: string; projectId: string; pagePlanId: string | null; promptVersionId: string | null; localStatus: LocalGenerationStatus; webhookProcessedAt: string | null; expectedOutputConstraintsJson?: string }, payload: Record<string, unknown>, providerStatus: string): Promise<{ assetId: string; jobId: string; duplicate: boolean }> {
+  function enforceConcurrency(db: AppDatabase, userId: string, projectId: string): void {
+    const userActive = db.prepare(`SELECT COUNT(*) AS count FROM generation_jobs WHERE user_id = ? AND local_status IN ('queued', 'in_progress', 'cancellation_requested')`).get(userId) as { count: number };
+    const projectActive = db.prepare(`SELECT COUNT(*) AS count FROM generation_jobs WHERE user_id = ? AND project_id = ? AND local_status IN ('queued', 'in_progress', 'cancellation_requested')`).get(userId, projectId) as { count: number };
+    if (userActive.count >= maxActivePerUser) throw new Error(`Per-user generation concurrency limit reached (${maxActivePerUser}). Stop queued work or wait for a job to finish.`);
+    if (projectActive.count >= maxActivePerProject) throw new Error(`Per-project generation concurrency limit reached (${maxActivePerProject}). Stop queued work or wait for a job to finish.`);
+  }
+
+  async function ingestResult(db: AppDatabase, job: { id: string; userId: string; projectId: string; pagePlanId: string | null; promptVersionId: string | null; localStatus: LocalGenerationStatus; webhookProcessedAt: string | null; expectedOutputConstraintsJson?: string; requestKind?: "initial" | "variation" | "prompt_edit"; sourceAssetId?: string | null }, payload: Record<string, unknown>, providerStatus: string): Promise<{ assetId: string; jobId: string; duplicate: boolean }> {
     const existing = findAssetForJob(db, job.userId, job.id);
     if (existing) return { assetId: existing.id, jobId: job.id, duplicate: true };
     const output = extractFirstImage(payload);
@@ -91,6 +103,12 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
            storage_reference, mime_type, width_px, height_px, byte_size, checksum_sha256,
            ai_provenance_classification, status, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ai_generated', 'completed', ?, ?)`).run(assetId, job.userId, job.projectId, job.pagePlanId, job.id, job.promptVersionId, storageKey, validated.mimeType, validated.widthPx, validated.heightPx, validated.byteSize, validated.contentHashSha256, createdAt, createdAt);
+        if (job.requestKind && job.requestKind !== "initial" && job.sourceAssetId) {
+          db.prepare(`INSERT INTO asset_variants
+            (id, user_id, project_id, generated_asset_id, source_asset_id, variant_kind,
+             storage_reference, mime_type, width_px, height_px, byte_size, checksum_sha256, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'alternate', ?, ?, ?, ?, ?, ?, 'completed', ?, ?)`).run(crypto.randomUUID(), job.userId, job.projectId, assetId, job.sourceAssetId, storageKey, validated.mimeType, validated.widthPx, validated.heightPx, validated.byteSize, validated.contentHashSha256, createdAt, createdAt);
+        }
         setJob(db, job.userId, job.id, { local_status: "completed", status: "completed", provider_status: providerStatus, provider_completed_at: createdAt, webhook_processed_at: createdAt, error_classification: null, error_code: null, error_message: null });
       })();
       return { assetId, jobId: job.id, duplicate: false };
@@ -100,19 +118,32 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
     }
   }
 
-  async function submit(db: AppDatabase, userId: string, input: { projectId: string; pagePlanId: string; promptVersionId: string; generationModel: string; generationEndpoint: string; aspectRatio: string; seed?: number; referenceAssetIds: string[]; expectedOutputConstraints: Record<string, unknown> }): Promise<GenerationJobSummary> {
+  async function submit(db: AppDatabase, userId: string, input: { projectId: string; pagePlanId: string; promptVersionId: string; generationModel: string; generationEndpoint: string; aspectRatio: string; seed?: number; referenceAssetIds: string[]; expectedOutputConstraints: Record<string, unknown>; idempotencyKey?: string; requestKind?: "initial" | "variation" | "prompt_edit"; sourceAssetId?: string }): Promise<GenerationJobSummary> {
     if (!getProjectForUser(db, userId, input.projectId)) throw new Error("Project not found.");
+    if (input.idempotencyKey) {
+      const existing = db.prepare(`SELECT id FROM generation_jobs WHERE user_id = ? AND idempotency_key = ?`).get(userId, input.idempotencyKey) as { id: string } | undefined;
+      if (existing) {
+        const saved = getGenerationJobForUser(db, userId, existing.id)!;
+        return { localJobId: saved.id, falRequestId: saved.falRequestId ?? "", status: saved.localStatus, providerStatus: saved.providerStatus ?? "", retryCount: saved.retryCount };
+      }
+    }
+    enforceConcurrency(db, userId, input.projectId);
     const prompt = getPromptVersionForUser(db, userId, input.promptVersionId);
     if (!prompt || prompt.projectId !== input.projectId || prompt.pagePlanId !== input.pagePlanId) throw new Error("Frozen prompt version not found.");
+    if (!modelApproval(input.generationEndpoint)) throw new Error("The selected model configuration is not active and administrator-approved.");
     if (prompt.status !== "approved" || !prompt.contentHashSha256 || !prompt.prompt) throw new Error("Prompt version is not frozen and cannot be submitted.");
     if (prompt.generationEndpoint !== input.generationEndpoint || prompt.generationModel !== input.generationModel || prompt.aspectRatio !== input.aspectRatio || (prompt.seed ?? null) !== (input.seed ?? null)) throw new Error("Generation parameters do not match the frozen prompt version.");
+    if (input.sourceAssetId) {
+      const source = getGeneratedAssetForUser(db, userId, input.sourceAssetId);
+      if (!source || source.projectId !== input.projectId || source.pagePlanId !== input.pagePlanId || source.status !== "approved") throw new Error("Only an approved asset in this page can be used as variation lineage.");
+    }
     const jobId = crypto.randomUUID();
     const createdAt = now();
     const modelInputs = { prompt: prompt.prompt, negative_prompt: prompt.negativePrompt, aspect_ratio: prompt.aspectRatio, seed: prompt.seed, reference_asset_ids: prompt.referenceAssetIds, model: prompt.generationModel };
     db.prepare(`INSERT INTO generation_jobs
       (id, user_id, project_id, page_plan_id, prompt_version_id, generation_model, generation_endpoint,
-       seed, status, local_status, model_inputs_json, expected_output_constraints_json, queued_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'draft', ?, ?, NULL, ?, ?)`).run(jobId, userId, input.projectId, input.pagePlanId, input.promptVersionId, prompt.generationModel, prompt.generationEndpoint, prompt.seed, json(modelInputs), json(input.expectedOutputConstraints), createdAt, createdAt);
+       seed, status, local_status, model_inputs_json, expected_output_constraints_json, idempotency_key, request_kind, source_asset_id, queued_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'draft', ?, ?, ?, ?, ?, NULL, ?, ?)`).run(jobId, userId, input.projectId, input.pagePlanId, input.promptVersionId, prompt.generationModel, prompt.generationEndpoint, prompt.seed, json(modelInputs), json(input.expectedOutputConstraints), input.idempotencyKey ?? null, input.requestKind ?? "initial", input.sourceAssetId ?? null, createdAt, createdAt);
     try {
       const submitted = await dependencies.adapter.submit(prompt.generationEndpoint, modelInputs, dependencies.webhookUrl ? { webhookUrl: dependencies.webhookUrl } : undefined);
       const queuedAt = now();

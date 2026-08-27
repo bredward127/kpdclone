@@ -62,3 +62,11 @@ The local job tracks local/provider status, provider request identity, model inp
 The webhook endpoint is disabled unless `FAL_WEBHOOK_ENABLED=true` and an HTTPS `FAL_WEBHOOK_URL` are configured. The implementation follows the current official FAL ED25519/JWKS signature mechanism with a five-minute timestamp window and a maximum 24-hour JWKS cache. Valid callbacks are acknowledged quickly, then processed idempotently by provider request ID. Result URLs are treated as transient: supported image bytes are downloaded server-side, validated, checksummed, and written to private storage before a durable `generated_assets` record is created.
 
 The provider queue migration is `0005_fal_generation_queue.sql`. No FAL credential is stored in database rows, logs, tests, or client bundles.
+
+## Page Studio: one page at a time
+
+The Page Studio is deliberately bounded. A creator selects one `PagePlan`, sees inherited context and the selected frozen prompt, chooses an active administrator-approved model configuration and supported aspect ratio, and submits one server-side generation request. The UI labels `Draft`, `Queued`, `Generating`, `Needs Review`, `Approved`, `Failed`, `Cancelled`, and `Superseded` explicitly, and refreshes only the selected page’s job/asset query every five seconds.
+
+Completed assets show the private image, print-size pixel calculation at 300 DPI, prompt version, model, seed, reference count, provenance, and review controls. Approval requires a completed or needs-review asset. Rejection requires a reason. Variation and prompt-edit regeneration create new jobs and asset-variant lineage; approved assets are never overwritten. The bounded queue offers only an explicit, confirmed next-two or next-three action. Server procedures enforce per-user/per-project active-job limits and idempotency keys, and cancellation can stop queued work where the provider permits.
+
+The Page Studio migration is `0006_page_generation_controls.sql`. PDF assembly remains intentionally deferred.
