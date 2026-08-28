@@ -370,6 +370,24 @@ export function createPagePlan(
   return getPagePlanForUser(db, userId, input.id)!;
 }
 
+export function updatePagePlan(
+  db: AppDatabase,
+  userId: string,
+  pagePlanId: string,
+  input: { sceneDirection: string; pageText: string; spreadNumber?: number },
+): PagePlanRecord | null {
+  const current = getPagePlanForUser(db, userId, pagePlanId);
+  if (!current) return null;
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE page_plans
+     SET scene_direction = @sceneDirection, page_text = @pageText,
+         spread_number = @spreadNumber, updated_at = @now
+     WHERE id = @pagePlanId AND user_id = @userId`,
+  ).run({ pagePlanId, userId, sceneDirection: input.sceneDirection, pageText: input.pageText, spreadNumber: input.spreadNumber ?? current.spreadNumber, now });
+  return getPagePlanForUser(db, userId, pagePlanId);
+}
+
 export type CoverPlanRecord = {
   id: string;
   userId: string;

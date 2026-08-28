@@ -9,6 +9,8 @@ import CoverDesk from "@/components/CoverDesk";
 import { ValidationDesk } from "@/components/ValidationDesk";
 import ExportCenter from "@/components/ExportCenter";
 import PublishingDesk from "@/components/PublishingDesk";
+import BookBriefEditor from "@/components/BookBriefEditor";
+import BlueprintPlanner from "@/components/BlueprintPlanner";
 
 const sectionCopy = {
   "book-brief": { eyebrow: "02 / Book brief", title: "Begin with the feeling.", description: "Capture the heart of the story, its reader, and the visual language you want to carry through every page.", icon: FileText, next: "blueprint", nextLabel: "Shape the blueprint" },
@@ -43,8 +45,17 @@ export default function StudioSection({ projectId, section }: { projectId: strin
   if (section === "book-brief") {
     return (
       <div className="mx-auto max-w-6xl">
-        <div className="mb-7 flex items-center justify-between gap-4"><Link href="/projects" className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--muted-ink)] hover:text-[var(--ink)]"><ArrowLeft size={15} /> All projects</Link><span className="mono rounded-full bg-[#e9f2ed] px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-[#517b68]">Publishing station</span></div>
-        <PublishingDesk projectId={projectId} />
+        <div className="mb-7 flex items-center justify-between gap-4"><Link href="/projects" className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--muted-ink)] hover:text-[var(--ink)]"><ArrowLeft size={15} /> All projects</Link><span className="mono rounded-full bg-[#e9f2ed] px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-[#517b68]">Book memory station</span></div>
+        <BookBriefEditor projectId={projectId} />
+      </div>
+    );
+  }
+
+  if (section === "blueprint") {
+    return (
+      <div className="mx-auto max-w-6xl">
+        <div className="mb-7 flex items-center justify-between gap-4"><Link href="/projects" className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--muted-ink)] hover:text-[var(--ink)]"><ArrowLeft size={15} /> All projects</Link><span className="mono rounded-full bg-[#e9f2ed] px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-[#517b68]">Page planning station</span></div>
+        <BlueprintPlanner projectId={projectId} />
       </div>
     );
   }

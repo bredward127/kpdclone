@@ -5,7 +5,7 @@ import { z } from "zod";
 import { clearSession } from "./auth";
 import { isFalAdministrator } from "./fal-admin";
 import { getFalConnectionStatus, type FalConnectionStatus } from "./fal";
-import { createBookBrief, createPagePlan, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, getGeneratedAssetForUser, getGenerationJobForUser, insertGenerationJob, listAssetVariantsForUser, listAuditEvents, listExportPackages, listGeneratedAssetsForPage, listGenerationJobsForUser, listPagePlans, reviewGeneratedAsset, transitionAssetStatus, transitionGenerationJob, updatePageApproval } from "./db-studio";
+import { createBookBrief, createPagePlan, updatePagePlan, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, getGeneratedAssetForUser, getGenerationJobForUser, insertGenerationJob, listAssetVariantsForUser, listAuditEvents, listExportPackages, listGeneratedAssetsForPage, listGenerationJobsForUser, listPagePlans, reviewGeneratedAsset, transitionAssetStatus, transitionGenerationJob, updatePageApproval } from "./db-studio";
 import { lifecycleStatuses, pageApprovalStates } from "../shared/studio";
 import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
 import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset } from "./reference-assets";
@@ -218,6 +218,11 @@ export function createAppRouter(
             throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
           }
           return createPagePlan(db, ctx.user.id, { id: crypto.randomUUID(), ...input });
+        }),
+        update: protectedProcedure.input(z.object({ pagePlanId: z.string().min(1), sceneDirection: z.string().max(10_000), pageText: z.string().max(10_000), spreadNumber: z.number().int().positive().optional() })).mutation(({ ctx, input }) => {
+          const updated = updatePagePlan(db, ctx.user.id, input.pagePlanId, input);
+          if (!updated) throw new TRPCError({ code: "NOT_FOUND", message: "Page plan not found." });
+          return updated;
         }),
         setApproval: protectedProcedure.input(z.object({
           pagePlanId: z.string().min(1),

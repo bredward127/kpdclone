@@ -1,0 +1,31 @@
+import { useEffect, useState } from "react";
+import { CheckCircle2, Info, Save } from "lucide-react";
+import { trpc } from "@/lib/trpc";
+
+const fields = [
+  ["briefText", "Story summary", "Describe what happens from beginning to end. Include the emotional journey, the lesson or purpose, and anything the reader must understand.", "A gentle story about a kitten who learns to ask for help while exploring a rainy garden."],
+  ["bookType", "Book type", "Choose the kind of book you are making. This affects planning and print expectations.", "Children's picture book"],
+  ["audience", "Intended reader", "Enter the reader's age range, reading level, interests, and any accessibility considerations.", "Ages 4–8; read-aloud friendly; short sentences."],
+  ["visualStyleAnchors", "Visual style anchors", "Describe the look that should stay consistent on every page: line quality, color, lighting, texture, composition, and mood.", "Warm watercolor, rounded shapes, soft daylight, uncluttered backgrounds, gentle expressions."],
+  ["characterBible", "Character bible", "Describe each recurring character so the same character can be recreated consistently. Include colors, clothing, proportions, personality, and important distinguishing features.", "Milo is a small orange kitten with a blue collar, white paws, and a curious but cautious personality."],
+  ["negativePrompt", "Things to avoid", "List constraints that should never appear, such as logos, readable text inside art, extra limbs, unsafe content, or visual styles you do not want.", "No logos, no readable text in illustrations, no extra characters, no scary faces, no imitation of a living artist."],
+] as const;
+
+type FormState = Record<(typeof fields)[number][0], string>;
+const emptyForm: FormState = { briefText: "", bookType: "Children's picture book", audience: "", visualStyleAnchors: "", characterBible: "", negativePrompt: "" };
+
+function Help({ text }: { text: string }) { return <span className="group relative inline-flex align-middle"><button type="button" aria-label={`Field information: ${text}`} title={text} className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-[#9aaab3] text-[#52636c] hover:bg-[#e6eef1] focus-visible:bg-[#e6eef1]"><Info size={12} /></button><span role="tooltip" className="pointer-events-none absolute bottom-full left-0 z-20 mb-2 hidden w-64 rounded-xl bg-[#20384e] p-3 text-left text-xs font-normal leading-5 text-white shadow-xl group-hover:block group-focus-within:block">{text}</span></span>; }
+
+export default function BookBriefEditor({ projectId }: { projectId: string }) {
+  const brief = trpc.studio.brief.get.useQuery({ projectId });
+  const save = trpc.studio.brief.save.useMutation();
+  const [form, setForm] = useState<FormState>(emptyForm);
+  const [dirty, setDirty] = useState(false);
+  const [notice, setNotice] = useState("");
+  useEffect(() => { if (brief.data) { setForm({ briefText: brief.data.briefText, bookType: brief.data.bookType, audience: brief.data.audience, visualStyleAnchors: brief.data.visualStyleAnchors, characterBible: brief.data.characterBible, negativePrompt: brief.data.negativePrompt }); setDirty(false); } }, [brief.data]);
+  const update = (key: keyof FormState, value: string) => { setForm((current) => ({ ...current, [key]: value })); setDirty(true); setNotice(""); };
+  const saveDraft = () => { setNotice(""); save.mutate({ projectId, ...form }, { onSuccess: (result) => { setDirty(false); setNotice(`Draft version ${result.version} saved securely at ${new Date(result.updatedAt).toLocaleTimeString()}.`); }, onError: (error) => setNotice(error.message) }); };
+  if (brief.isLoading) return <p className="rounded-2xl bg-[#fbfaf5] p-6 text-sm text-[var(--muted-ink)]">Loading your saved brief…</p>;
+  if (brief.isError) return <p className="rounded-2xl bg-[#fff0eb] p-6 text-sm text-[#7f433a]">Your brief could not be loaded. Refresh before entering more work.</p>;
+  return <section className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5 shadow-[0_8px_30px_rgba(24,43,58,.06)] md:p-7"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="mono text-[10px] uppercase tracking-[0.22em] text-[var(--coral)]">Book memory</p><h2 className="serif mt-2 text-3xl text-[var(--ink)]">Save the decisions once.</h2><p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted-ink)]">This brief becomes the creative memory inherited by your blueprint, page prompts, cover, and validation. Save a draft before leaving the page; each save creates a recoverable server version.</p></div><span className="rounded-full bg-[#e9f2ed] px-3 py-1.5 text-xs font-semibold text-[#356b63]">{dirty ? "Unsaved changes" : brief.data ? `Saved version ${brief.data.version}` : "New brief"}</span></div><div className="mt-7 grid gap-5 md:grid-cols-2">{fields.map(([key, label, help, placeholder]) => <label key={key} className={`${key === "briefText" || key === "visualStyleAnchors" || key === "characterBible" || key === "negativePrompt" ? "md:col-span-2" : ""} block text-sm font-semibold text-[var(--ink)]`}><span className="inline-flex items-center">{label}<Help text={help} /></span>{key === "bookType" || key === "audience" ? <input value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2" /> : <textarea value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2 min-h-28" rows={key === "briefText" ? 5 : 4} />}</label>)}</div><div className="mt-6 flex flex-wrap items-center gap-3"><button type="button" onClick={saveDraft} disabled={save.isPending || !dirty} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"><Save size={16} />{save.isPending ? "Saving draft…" : "Save draft"}</button>{!dirty && brief.data ? <span className="inline-flex items-center gap-2 text-sm text-[#356b63]"><CheckCircle2 size={16} />Saved on the server</span> : <span className="text-xs text-[var(--muted-ink)]">Your changes are not durable until you save.</span>}{notice ? <p className="w-full text-sm text-[#356b63]" role="status">{notice}</p> : null}</div></section>;
+}
