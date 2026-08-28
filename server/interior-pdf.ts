@@ -5,9 +5,18 @@ import type { AppDatabase, ProjectRecord } from "./db";
 import { getProjectForUser } from "./db";
 import { readPrivateStorageBytes, type PrivateStorage } from "./storage";
 import { getQualityResultForAsset } from "./asset-quality";
+import {
+  KDP_BLEED_ALLOWANCE,
+  bleedHeightAllowanceInches,
+  bleedWidthAllowanceInches,
+  gutterMarginInches,
+  interiorPageSizeInches,
+  outsideMarginInches,
+  topBottomMarginInches,
+} from "../shared/kdp-geometry";
 
-export const INTERIOR_RULESET_VERSION = "kdp-paperback-2026-01";
-export const INTERIOR_BLEED_INCHES = 0.125;
+export const INTERIOR_RULESET_VERSION = "kdp-paperback-2026-02";
+export const INTERIOR_BLEED_INCHES = KDP_BLEED_ALLOWANCE.outsideInches;
 const POINTS_PER_INCH = 72;
 
 export type InteriorPageType = "front_matter" | "dedication" | "copyright" | "storybook_text_spread" | "coloring_page" | "activity_page" | "intentional_blank" | "end_matter";
@@ -31,12 +40,19 @@ function inches(value: number): number { return value * POINTS_PER_INCH; }
 function approxEqual(a: number, b: number): boolean { return Math.abs(a - b) < 0.0001; }
 
 export function kdpInteriorRules(pageCount: number, bleed: boolean): KdpInteriorRules {
-  const insideMarginInches = pageCount <= 150 ? 0.375 : pageCount <= 300 ? 0.5 : pageCount <= 500 ? 0.625 : pageCount <= 700 ? 0.75 : 0.875;
-  return { version: INTERIOR_RULESET_VERSION, insideMarginInches, outsideMarginInches: bleed ? 0.375 : 0.25, topMarginInches: 0.25, bottomMarginInches: 0.25, bleedWidthInches: bleed ? 0.125 : 0, bleedHeightInches: bleed ? 0.25 : 0 };
+  return {
+    version: INTERIOR_RULESET_VERSION,
+    insideMarginInches: gutterMarginInches(pageCount),
+    outsideMarginInches: outsideMarginInches(bleed),
+    topMarginInches: topBottomMarginInches(bleed),
+    bottomMarginInches: topBottomMarginInches(bleed),
+    bleedWidthInches: bleedWidthAllowanceInches(bleed),
+    bleedHeightInches: bleedHeightAllowanceInches(bleed),
+  };
 }
 
 export function interiorPhysicalSize(trimWidthInches: number, trimHeightInches: number, bleed: boolean): { width: number; height: number } {
-  return { width: trimWidthInches + (bleed ? 0.125 : 0), height: trimHeightInches + (bleed ? 0.25 : 0) };
+  return interiorPageSizeInches(trimWidthInches, trimHeightInches, bleed);
 }
 
 function pageSide(pageNumber: number, readingDirection: ReadingDirection): "left" | "right" { const ltrSide = pageNumber % 2 === 0 ? "left" : "right"; return readingDirection === "ltr" ? ltrSide : ltrSide === "left" ? "right" : "left"; }

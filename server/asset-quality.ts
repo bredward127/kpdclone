@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import sharp, { type Metadata, type Stats } from "sharp";
 import type { AppDatabase } from "./db";
 import { getProjectForUser } from "./db";
+import { KDP_BLEED_ALLOWANCE, interiorPageSizeInches } from "../shared/kdp-geometry";
 
 export const QUALITY_ANALYSIS_VERSION = "asset-quality-v1";
 export type QualitySeverity = "blocking" | "warning";
@@ -60,9 +61,13 @@ export async function analyzeAssetQuality(db: AppDatabase, input: QualityInput):
   if (Boolean(input.generatedAssetId) === Boolean(input.referenceAssetId)) throw new Error("Quality analysis must identify exactly one generated or reference asset.");
   const project = getProjectForUser(db, input.userId, input.projectId);
   if (!project) throw new Error("Project not found.");
-  const placedWidthInches = input.placedWidthInches ?? project.trimWidthInches;
-  const placedHeightInches = input.placedHeightInches ?? project.trimHeightInches;
-  const bleedInches = input.bleedInches ?? (project.bleedPreference === "bleed" ? 0.125 : 0);
+  const projectHasBleed = project.bleedPreference === "bleed";
+  // A full-page asset on a bleed book must cover the whole bleed page, not just the
+  // trim box, so the DPI target is measured against the larger dimension.
+  const defaultPlacement = interiorPageSizeInches(project.trimWidthInches, project.trimHeightInches, projectHasBleed);
+  const placedWidthInches = input.placedWidthInches ?? defaultPlacement.width;
+  const placedHeightInches = input.placedHeightInches ?? defaultPlacement.height;
+  const bleedInches = input.bleedInches ?? (projectHasBleed ? KDP_BLEED_ALLOWANCE.outsideInches : 0);
   const safeAreaInsetInches = input.safeAreaInsetInches ?? (project.bleedPreference === "bleed" ? 0.25 : 0.125);
   const requiredWidthPx = Math.ceil(placedWidthInches * 300);
   const requiredHeightPx = Math.ceil(placedHeightInches * 300);

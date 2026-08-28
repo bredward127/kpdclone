@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import type { AppDatabase } from "./db";
 import { getProjectForUser } from "./db";
 import { createAuditEvent, getGenerationJobForUser, getGeneratedAssetForUser } from "./db-studio";
-import { getPromptVersionForUser } from "./prompt-composer";
+import { assertNoBlockingLint, getPromptVersionForUser } from "./prompt-composer";
 import { classifyContentPolicy, recordContentPolicyReview } from "./publishing";
 import { getFalModel } from "./fal-models";
 import { validateReferenceImage, getReferenceValidationLimits } from "./reference-validation";
@@ -145,6 +145,9 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
     if (!prompt || prompt.projectId !== input.projectId || prompt.pagePlanId !== input.pagePlanId) throw new Error("Frozen prompt version not found.");
     if (!modelApproval(input.generationEndpoint)) throw new Error("The selected model configuration is not active and administrator-approved.");
     if (prompt.status !== "approved" || !prompt.contentHashSha256 || !prompt.prompt) throw new Error("Prompt version is not frozen and cannot be submitted.");
+    // Server-side and not dismissable from the client: a blocking lint stops the
+    // request here even if the version was frozen before the rule was tightened.
+    assertNoBlockingLint(prompt.lintWarnings);
     const policyText = `${prompt.prompt}\n${prompt.negativePrompt}`;
     const policyDecision = classifyContentPolicy(policyText);
     recordContentPolicyReview(db, userId, input.projectId, "prompt", input.promptVersionId, policyText, false);

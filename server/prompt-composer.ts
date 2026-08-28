@@ -4,7 +4,7 @@ import { getProjectForUser } from "./db";
 import { getBriefForProject, getPagePlanForUser } from "./db-studio";
 import { listReferenceAssets, assertReferenceCanBeUsedForGeneration, type ReferenceAssetRecord } from "./reference-assets";
 
-export type PromptLintSeverity = "warning";
+export type PromptLintSeverity = "warning" | "blocking";
 export type PromptLintCode =
   | "missing_subject"
   | "vague_style"
@@ -22,6 +22,19 @@ export type PromptLintWarning = {
   evidence: string;
   section: string;
 };
+
+/**
+ * Anchored so it cannot match inside an unrelated longer word. Every other pattern
+ * in lintPrompt() is anchored this way; this one was not, which is how a benign
+ * brief containing "children" satisfied half the old condition on every project.
+ * Do not remove entries from this list.
+ */
+const SEXUALIZING_DESCRIPTOR_PATTERN = /\b(sexual(?:ly|ized|ised|ization|isation)?|sexy|nude|nudity|naked|erotic(?:a|ally)?|seductive(?:ly)?|fetish(?:es|istic)?|lewd|obscene|pornographic|porn|provocative(?:ly)?|suggestive(?:ly)?)\b/i;
+
+/** A lint result that must prevent prompt freezing and provider submission. */
+export function blockingLintWarnings(warnings: ReadonlyArray<PromptLintWarning>): PromptLintWarning[] {
+  return warnings.filter((warning) => warning.severity === "blocking");
+}
 
 export type PromptUserEdits = {
   promptAddition?: string;
@@ -159,8 +172,14 @@ function lintPrompt(input: {
   if (/\b(in the style of|style of|imitate|copy the style|like [a-z]+ artist)\b/i.test(allText)) {
     warnings.push({ code: "living_artist_style_request", severity: "warning", message: "Avoid requesting a living artist’s distinctive style; describe independent visual attributes instead.", evidence: allText.match(/\b(in the style of|style of|imitate|copy the style)\b/i)?.[0] ?? "style imitation language", section: "visual style" });
   }
-  if (/(child|minor|toddler|underage|young girl|young boy)/i.test(allText) && /(sexual|nude|naked|erotic|seductive|explicit|fetish)/i.test(allText)) {
-    warnings.push({ code: "sexual_or_minor_content", severity: "warning", message: "Review the request: sexualized content involving a minor or child-coded subject is not allowed.", evidence: "minor/child and sexualized terms detected", section: "specific page scene" });
+  // Every project in this application is a children's book, so "the subject is a
+  // child" is true by definition and carries no signal. Requiring it before flagging
+  // a sexualizing descriptor weakened the check rather than narrowing it, and the
+  // unanchored child pattern matched inside "children", making that half permanently
+  // true. The descriptor now fires on its own, anchored, and blocks generation.
+  const sexualizingDescriptor = allText.match(SEXUALIZING_DESCRIPTOR_PATTERN);
+  if (sexualizingDescriptor) {
+    warnings.push({ code: "sexual_or_minor_content", severity: "blocking", message: "Sexualized or sexualizing language is not permitted in a children's book request. Remove it before generating.", evidence: sexualizingDescriptor[0], section: "specific page scene" });
   }
   if ((input.project.bleedPreference === "no_bleed" && /full[- ]?bleed|edge[- ]to[- ]edge|bleed off the page/i.test(`${input.prompt}\n${input.userEdits.compositionNotes ?? ""}`)) || (input.project.bleedPreference === "bleed" && /keep all content inside trim|no bleed/i.test(input.userEdits.compositionNotes ?? ""))) {
     warnings.push({ code: "conflicting_print_constraints", severity: "warning", message: "The page direction conflicts with the project bleed preference; resolve the print-safe boundary before generation.", evidence: input.project.bleedPreference, section: "print-safe requirements" });
@@ -288,10 +307,17 @@ export function restorePromptVersion(db: AppDatabase, userId: string, promptVers
   return createPromptVersion(db, userId, composed, { projectId: original.projectId, pagePlanId: original.pagePlanId, generationModel: original.generationModel, generationEndpoint: original.generationEndpoint, aspectRatio: original.aspectRatio, seed: original.seed ?? undefined, referenceAssetIds: original.referenceAssetIds, userEdits: original.userEdits }, original.id);
 }
 
+export function assertNoBlockingLint(warnings: ReadonlyArray<PromptLintWarning>): void {
+  const blocking = blockingLintWarnings(warnings);
+  if (!blocking.length) return;
+  throw new Error(`This prompt cannot be used: ${blocking.map((warning) => `${warning.code} (matched "${warning.evidence}") — ${warning.message}`).join(" ")}`);
+}
+
 export function freezePromptVersion(db: AppDatabase, userId: string, promptVersionId: string): PromptVersionRecord {
   const existing = getPromptVersionForUser(db, userId, promptVersionId);
   if (!existing) throw new Error("Prompt version not found.");
   if (existing.status === "archived" || existing.status === "superseded") throw new Error("This prompt version cannot be frozen.");
+  assertNoBlockingLint(existing.lintWarnings);
   db.prepare(`UPDATE prompt_versions SET status = 'approved', updated_at = ? WHERE id = ? AND user_id = ?`).run(new Date().toISOString(), promptVersionId, userId);
   return getPromptVersionForUser(db, userId, promptVersionId)!;
 }
