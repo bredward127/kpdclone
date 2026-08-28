@@ -158,10 +158,14 @@ In the Render service, open **Environment** or **Environment Variables**, then c
 | `FAL_TEXT_ENDPOINT` | `openrouter/router/openai/v1/chat/completions` after reviewing the current FAL page | No |
 | `FAL_TEXT_MODEL` | A real model identifier copied from that FAL endpoint’s model documentation, in `vendor/model` form — for example `openai/gpt-4o`. Enter the identifier itself, not this description. | No |
 | `FAL_WEBHOOK_ENABLED` | `false` for the first local-style generation check; `true` only after the HTTPS callback is ready | No |
+| `FAL_TEXT_TIMEOUT_MS` | Optional. How long to wait for the drafting model, in milliseconds. Defaults to `120000` (two minutes); a real 24-page draft takes roughly 15-30 seconds. | No |
+| `FAL_SYNC_BASE_URL` | Optional. Host for FAL endpoints that answer synchronously. Defaults to `https://fal.run` and should not normally be set. | No |
 
 #### FAL story-drafting setup
 
 The current Blueprint AI drafting flow uses FAL for story summaries, page text, and scene directions. The supplied FAL reference identifies the OpenAI-compatible endpoint as `openrouter/router/openai/v1/chat/completions` and recommends the `@fal-ai/client` queue pattern. Set `FAL_TEXT_ENDPOINT` to that endpoint and set `FAL_TEXT_MODEL` to a currently supported model identifier selected from the endpoint’s live documentation. Do not use the older `fal-ai/any-llm` endpoint; FAL currently marks it deprecated. The application uses the existing server-only `FAL_KEY` for both image and text requests. It never sends that key to the browser.
+
+Story drafting calls the OpenAI-compatible chat-completions endpoint **synchronously**: one POST to `https://fal.run/<FAL_TEXT_ENDPOINT>` returns the finished completion. That endpoint is not a queue app and exposes no `/requests/{id}/status` sub-path, so it must not be driven with the queue submit-then-poll pattern -- doing so returns `405 Method Not Allowed` after the model has already run and been billed.
 
 These two variables must contain identifiers, not descriptions of identifiers. Pasting the wording from the table above into the value produces a FAL `400 ... is not a valid model ID` at drafting time. The server now refuses obvious placeholder text before calling FAL and names the variable at fault, and any provider rejection is reported with its HTTP status and FAL's own message.
 

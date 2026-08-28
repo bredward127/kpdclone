@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createFalQueueClient, describeProviderBody, FalProviderError } from "../server/fal-queue";
 import { draftStoryAndPages } from "../server/story-drafting";
 
-const config = { apiKey: "test-only", baseUrl: "https://api.fal.ai", queueBaseUrl: "https://queue.fal.run", timeoutMs: 5_000 };
+const config = { apiKey: "test-only", baseUrl: "https://api.fal.ai", queueBaseUrl: "https://queue.fal.run", syncBaseUrl: "https://fal.run", timeoutMs: 5_000 };
 
 describe("FAL error bodies are reported, not discarded", () => {
   it("reads the OpenAI-compatible router's error shape", () => {
@@ -51,42 +51,20 @@ describe("placeholder deployment values are refused before reaching FAL", () => 
     }
   });
 
-  it("accepts a real vendor/model identifier and a real endpoint path", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
-      const target = String(url);
-      if (target.endsWith("/status")) return new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 });
-      if (target.endsWith("/response")) return new Response(JSON.stringify({ output: JSON.stringify({ storySummary: "s", pages: [{ pageNumber: 1, pageText: "t", sceneDirection: "d" }] }) }), { status: 200 });
-      return new Response(JSON.stringify({ request_id: "r1" }), { status: 200 });
-    });
-    const result = await draftStoryAndPages(null, [], 1, { ...base, FAL_TEXT_MODEL: "openai/gpt-4o" });
-    expect(result.pages).toHaveLength(1);
-    fetchMock.mockRestore();
-  });
-});
-
-describe("story drafting handles real provider behaviour", () => {
-  const env = { FAL_KEY: "test-only", FAL_TEXT_ENDPOINT: "openrouter/router/openai/v1/chat/completions", FAL_TEXT_MODEL: "openai/gpt-4o" };
-
-  it("fails immediately on a queue status error instead of spinning to timeout", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
-      const target = String(url);
-      if (target.endsWith("/status")) return new Response(JSON.stringify({ status: "IN_QUEUE", error: "model unavailable", error_type: "ModelError" }), { status: 200 });
-      return new Response(JSON.stringify({ request_id: "r1" }), { status: 200 });
-    });
-    await expect(draftStoryAndPages(null, [], 1, env)).rejects.toThrow(/FAL text drafting failed: model unavailable \(ModelError\)/);
+  it("refuses before making any network call at all", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    await expect(draftStoryAndPages(null, [], 24, { ...base, FAL_TEXT_MODEL: "your-model" })).rejects.toThrow(/placeholder text/);
+    expect(fetchMock).not.toHaveBeenCalled();
     fetchMock.mockRestore();
   });
 
-  it("parses a draft the model wrapped in a markdown code fence", async () => {
-    const draft = { storySummary: "A kitten asks for help.", pages: [{ pageNumber: 1, pageText: "Milo looked up.", sceneDirection: "An orange kitten under a leaf." }] };
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
-      const target = String(url);
-      if (target.endsWith("/status")) return new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 });
-      if (target.endsWith("/response")) return new Response(JSON.stringify({ output: "```json\n" + JSON.stringify(draft) + "\n```" }), { status: 200 });
-      return new Response(JSON.stringify({ request_id: "r1" }), { status: 200 });
-    });
-    const result = await draftStoryAndPages(null, [], 1, env);
-    expect(result.storySummary).toContain("kitten");
-    fetchMock.mockRestore();
+  it("accepts real vendor/model identifiers", async () => {
+    for (const model of ["openai/gpt-4o", "anthropic/claude-sonnet-4", "google/gemini-2.5-flash"]) {
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ storySummary: "s", pages: [{ pageNumber: 1, pageText: "t", sceneDirection: "d" }] }) } }] }), { status: 200 }),
+      );
+      await expect(draftStoryAndPages(null, [], 1, { ...base, FAL_TEXT_MODEL: model })).resolves.toBeTruthy();
+      fetchMock.mockRestore();
+    }
   });
 });

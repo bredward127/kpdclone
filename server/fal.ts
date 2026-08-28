@@ -4,12 +4,19 @@ const falEnvSchema = z.object({
   FAL_KEY: z.string().trim().min(1).optional(),
   FAL_BASE_URL: z.string().url().optional(),
   FAL_QUEUE_BASE_URL: z.string().url().optional(),
+  FAL_SYNC_BASE_URL: z.string().url().optional(),
 });
 
 export type FalConfig = {
   apiKey: string;
   baseUrl: string;
   queueBaseUrl: string;
+  /**
+   * Host for endpoints that answer synchronously rather than through the queue.
+   * The OpenAI-compatible chat-completions endpoint is one: it returns the whole
+   * completion from the POST and exposes no /requests/{id}/status sub-path.
+   */
+  syncBaseUrl: string;
   timeoutMs: number;
 };
 
@@ -36,6 +43,7 @@ export function loadFalConfig(env: NodeJS.ProcessEnv = process.env): FalConfig |
     apiKey: parsed.data.FAL_KEY,
     baseUrl: (parsed.data.FAL_BASE_URL ?? "https://api.fal.ai").replace(/\/$/, ""),
     queueBaseUrl: (parsed.data.FAL_QUEUE_BASE_URL ?? "https://queue.fal.run").replace(/\/$/, ""),
+    syncBaseUrl: (parsed.data.FAL_SYNC_BASE_URL ?? "https://fal.run").replace(/\/$/, ""),
     timeoutMs: 5_000,
   };
 }
