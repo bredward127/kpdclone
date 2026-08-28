@@ -388,6 +388,16 @@ export function updatePagePlan(
   return getPagePlanForUser(db, userId, pagePlanId);
 }
 
+/**
+ * Remove one page plan. Prompt versions and generated assets reference the page
+ * with ON DELETE SET NULL, so their history survives the deletion rather than
+ * disappearing with the page.
+ */
+export function deletePagePlan(db: AppDatabase, userId: string, pagePlanId: string): boolean {
+  const result = db.prepare(`DELETE FROM page_plans WHERE id = ? AND user_id = ?`).run(pagePlanId, userId);
+  return result.changes > 0;
+}
+
 export type CoverPlanRecord = {
   id: string;
   userId: string;

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { clearSession } from "./auth";
 import { isFalAdministrator } from "./fal-admin";
 import { getFalConnectionStatus, type FalConnectionStatus } from "./fal";
-import { createBookBrief, createPagePlan, updatePagePlan, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, getGeneratedAssetForUser, getGenerationJobForUser, insertGenerationJob, listAssetVariantsForUser, listAuditEvents, listExportPackages, listGeneratedAssetsForPage, listGenerationJobsForUser, listPagePlans, reviewGeneratedAsset, transitionAssetStatus, transitionGenerationJob, updatePageApproval } from "./db-studio";
+import { createBookBrief, createPagePlan, updatePagePlan, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, getGeneratedAssetForUser, getGenerationJobForUser, insertGenerationJob, listAssetVariantsForUser, listAuditEvents, listExportPackages, listGeneratedAssetsForPage, listGenerationJobsForUser, listPagePlans, reviewGeneratedAsset, transitionAssetStatus, transitionGenerationJob, updatePageApproval, deletePagePlan } from "./db-studio";
 import { lifecycleStatuses, pageApprovalStates } from "../shared/studio";
 import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
 import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset } from "./reference-assets";
@@ -153,11 +153,11 @@ export function createAppRouter(
           recordWorkflowEvent(ctx.user.id, input.projectId, "book_brief", brief.id, "brief_changed", JSON.stringify({ version: brief.version }));
           return brief;
         }),
-        draftWithAi: protectedProcedure.input(projectIdInput.extend({ pageCount: z.number().int().positive().max(200) })).mutation(async ({ ctx, input }) => {
+        draftWithAi: protectedProcedure.input(projectIdInput.extend({ pageCount: z.number().int().positive().max(200), pageNumbers: z.array(z.number().int().positive()).max(200).optional() })).mutation(async ({ ctx, input }) => {
           enforceLimit(policyLimiter, ctx.user.id, "AI planning");
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
           try {
-            return await draftStoryAndPages(getBriefForProject(db, ctx.user.id, input.projectId), listPagePlans(db, ctx.user.id, input.projectId), input.pageCount);
+            return await draftStoryAndPages(getBriefForProject(db, ctx.user.id, input.projectId), listPagePlans(db, ctx.user.id, input.projectId), input.pageCount, process.env, { targetPageNumbers: input.pageNumbers });
           } catch (error) {
             throw new TRPCError({ code: "PRECONDITION_FAILED", message: error instanceof Error ? error.message : "AI-assisted planning is not configured." });
           }
@@ -233,6 +233,41 @@ export function createAppRouter(
           const updated = updatePagePlan(db, ctx.user.id, input.pagePlanId, input);
           if (!updated) throw new TRPCError({ code: "NOT_FOUND", message: "Page plan not found." });
           return updated;
+        }),
+        /**
+         * One row per page with everything the page studio needs to decide what
+         * can be generated: the latest prompt version, whether a frozen
+         * (approved) one exists, and the newest asset. Without this the board
+         * would need a prompt query and an asset query per page.
+         */
+        board: protectedProcedure.input(projectIdInput).query(({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          return listPagePlans(db, ctx.user.id, input.projectId).map((page) => {
+            const versions = listPromptVersions(db, ctx.user.id, input.projectId, page.id);
+            const approved = versions.find((version) => version.status === "approved") ?? null;
+            const latest = versions[0] ?? null;
+            const assets = listGeneratedAssetsForPage(db, ctx.user.id, input.projectId, page.id);
+            const jobs = listGenerationJobsForUser(db, ctx.user.id, input.projectId, page.id);
+            return {
+              pagePlanId: page.id,
+              pageNumber: page.pageNumber,
+              sceneDirection: page.sceneDirection,
+              pageText: page.pageText,
+              promptVersionCount: versions.length,
+              latestPromptVersion: latest ? { id: latest.id, version: latest.version, status: latest.status, blockingLintCount: latest.lintWarnings.filter((warning) => warning.severity === "blocking").length } : null,
+              approvedPromptVersion: approved ? { id: approved.id, version: approved.version, referenceAssetIds: approved.referenceAssetIds } : null,
+              latestAsset: assets[0] ? { id: assets[0].id, status: assets[0].status } : null,
+              activeJob: jobs.find((job) => ["queued", "in_progress", "cancellation_requested"].includes(job.localStatus)) ? true : false,
+            };
+          });
+        }),
+        delete: protectedProcedure.input(z.object({ projectId: z.string().min(1), pagePlanId: z.string().min(1) })).mutation(({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          const page = getPagePlanForUser(db, ctx.user.id, input.pagePlanId);
+          if (!page || page.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "Page plan not found." });
+          if (!deletePagePlan(db, ctx.user.id, input.pagePlanId)) throw new TRPCError({ code: "NOT_FOUND", message: "Page plan not found." });
+          recordWorkflowEvent(ctx.user.id, input.projectId, "page_plan", input.pagePlanId, "page_deleted", JSON.stringify({ pageNumber: page.pageNumber }));
+          return { deleted: true, pageNumber: page.pageNumber };
         }),
         setApproval: protectedProcedure.input(z.object({
           pagePlanId: z.string().min(1),

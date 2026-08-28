@@ -29,7 +29,7 @@ function idempotencyKey(prefix: string, pagePlanId: string) {
   return `${prefix}-${pagePlanId}-${crypto.randomUUID()}`;
 }
 
-export default function PageGenerationStudio({ projectId }: { projectId: string }) {
+export default function PageGenerationStudio({ projectId, focusPagePlanId = "" }: { projectId: string; focusPagePlanId?: string }) {
   const utils = trpc.useUtils();
   const pages = trpc.studio.pages.list.useQuery({ projectId });
   const models = trpc.studio.generationJobs.models.useQuery();
@@ -45,8 +45,9 @@ export default function PageGenerationStudio({ projectId }: { projectId: string 
   const [dangerAction, setDangerAction] = useState<"stop" | "archive" | null>(null);
 
   useEffect(() => {
+    if (focusPagePlanId) { setSelectedPageId(focusPagePlanId); return; }
     if (!selectedPageId && pages.data?.[0]) setSelectedPageId(pages.data[0].id);
-  }, [pages.data, selectedPageId]);
+  }, [pages.data, selectedPageId, focusPagePlanId]);
 
   const selectedPage = pages.data?.find((page) => page.id === selectedPageId) ?? null;
   const prompts = trpc.studio.prompts.list.useQuery({ projectId, pagePlanId: selectedPageId }, { enabled: Boolean(selectedPageId) });
@@ -86,7 +87,11 @@ export default function PageGenerationStudio({ projectId }: { projectId: string 
   };
 
   const queueNextPages = async () => {
-    if (!activeModel || !approvedPrompt || !pages.data) return;
+    // This used to return silently. With no frozen prompt on the selected page
+    // the button did nothing at all -- no message, no request, nothing in FAL.
+    if (!pages.data?.length) { setFeedback("There are no page plans in this project yet."); return; }
+    if (!activeModel) { setFeedback("No reviewed model configuration is active, so nothing can be generated. An administrator must activate one."); return; }
+    if (!approvedPrompt) { setFeedback("This page has no frozen prompt version. Compose a prompt below, press Freeze & approve, then try again."); return; }
     const chosen = pages.data.filter((page) => page.id !== selectedPageId).slice(0, queueCount);
     if (chosen.length !== queueCount) { setFeedback(`There are not ${queueCount} additional page plans available.`); return; }
     const requests = await Promise.all(chosen.map(async (page) => {

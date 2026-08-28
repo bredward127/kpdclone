@@ -76,7 +76,7 @@ export async function draftStoryAndPages(
   pages: PagePlanRecord[],
   pageCount: number,
   env: NodeJS.ProcessEnv = process.env,
-  dependencies: { fetchImpl?: typeof fetch } = {},
+  options: { targetPageNumbers?: number[]; fetchImpl?: typeof fetch } = {},
 ): Promise<StoryDraft> {
   const endpoint = requiredEnv(env, "FAL_TEXT_ENDPOINT");
   const model = requiredEnv(env, "FAL_TEXT_MODEL");
@@ -87,7 +87,15 @@ export async function draftStoryAndPages(
     brief: brief ? { briefText: brief.briefText, bookType: brief.bookType, audience: brief.audience, visualStyleAnchors: brief.visualStyleAnchors, characterBible: brief.characterBible, negativePrompt: brief.negativePrompt } : null,
     existingPages: pages.map((page) => ({ pageNumber: page.pageNumber, pageText: page.pageText, sceneDirection: page.sceneDirection })),
   });
-  const prompt = `Create a complete original children's book plan with exactly ${safeCount} ordered pages. Return JSON only with this shape: {"storySummary":"...","pages":[{"pageNumber":1,"pageText":"...","sceneDirection":"..."}]}. Each page needs concise pageText and a specific visual sceneDirection. Preserve any non-empty existing page entries. Do not request copyrighted characters, trademarks, living artists' styles, or unsafe content. Saved project context: ${context}`;
+  /**
+   * A targeted redraft rewrites only the named pages. Without this, adding one
+   * page to a finished book re-planned all of it and discarded work the author
+   * had already reviewed and edited.
+   */
+  const targets = (options.targetPageNumbers ?? []).filter((value) => Number.isInteger(value) && value > 0);
+  const prompt = targets.length
+    ? `An existing children's book plan is being extended. Rewrite ONLY page${targets.length === 1 ? "" : "s"} ${targets.join(", ")}. Return JSON only with this shape: {"storySummary":"...","pages":[{"pageNumber":1,"pageText":"...","sceneDirection":"..."}]}, whose "pages" array contains ONLY the rewritten page${targets.length === 1 ? "" : "s"} ${targets.join(", ")} and nothing else. Keep "storySummary" identical to the saved summary. The new page must fit the established characters, tone and continuity of the surrounding pages without contradicting or restating them. Do not request copyrighted characters, trademarks, living artists' styles, or unsafe content. Saved project context: ${context}`
+    : `Create a complete original children's book plan with exactly ${safeCount} ordered pages. Return JSON only with this shape: {"storySummary":"...","pages":[{"pageNumber":1,"pageText":"...","sceneDirection":"..."}]}. Each page needs concise pageText and a specific visual sceneDirection. Preserve any non-empty existing page entries. Do not request copyrighted characters, trademarks, living artists' styles, or unsafe content. Saved project context: ${context}`;
 
   /**
    * The OpenAI-compatible chat-completions endpoint answers synchronously: the
@@ -96,7 +104,7 @@ export async function draftStoryAndPages(
    * completions path and FAL answered 405 Method Not Allowed -- after the model
    * had already run and been billed. One request, one response, no polling.
    */
-  const fetchImpl = dependencies.fetchImpl ?? fetch;
+  const fetchImpl = options.fetchImpl ?? fetch;
   const url = `${config.syncBaseUrl}/${endpoint.replace(/^\/+|\/+$/g, "")}`;
   const timeout = textTimeoutMs(env);
 
@@ -136,5 +144,11 @@ export async function draftStoryAndPages(
   if (!result.success) {
     throw new Error(`FAL text drafting returned JSON that does not match the required story shape: ${result.error.issues.slice(0, 3).map((issue) => `${issue.path.join(".") || "(root)"} ${issue.message}`).join("; ")}`);
   }
-  return result.data;
+  if (!targets.length) return result.data;
+  // Keep only the pages that were asked for, so a stray extra page in the reply
+  // cannot overwrite work elsewhere in the book.
+  const wanted = new Set(targets);
+  const pagesForTargets = result.data.pages.filter((page) => wanted.has(page.pageNumber));
+  if (!pagesForTargets.length) throw new Error(`FAL text drafting returned no content for page${targets.length === 1 ? "" : "s"} ${targets.join(", ")}.`);
+  return { storySummary: result.data.storySummary, pages: pagesForTargets };
 }
