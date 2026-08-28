@@ -243,9 +243,9 @@ export function createAppRouter(
          * (approved) one exists, and the newest asset. Without this the board
          * would need a prompt query and an asset query per page.
          */
-        board: protectedProcedure.input(projectIdInput).query(({ ctx, input }) => {
+        board: protectedProcedure.input(projectIdInput).query(async ({ ctx, input }) => {
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
-          return listPagePlans(db, ctx.user.id, input.projectId).map((page) => {
+          return await Promise.all(listPagePlans(db, ctx.user.id, input.projectId).map(async (page) => {
             const versions = listPromptVersions(db, ctx.user.id, input.projectId, page.id);
             const approved = versions.find((version) => version.status === "approved") ?? null;
             const latest = versions[0] ?? null;
@@ -262,10 +262,17 @@ export function createAppRouter(
               // to match the frozen prompt exactly, so the board sends the
               // version's own parameters rather than a page-level guess.
               approvedPromptVersion: approved ? { id: approved.id, version: approved.version, referenceAssetIds: approved.referenceAssetIds, generationModel: approved.generationModel, generationEndpoint: approved.generationEndpoint, aspectRatio: approved.aspectRatio, seed: approved.seed } : null,
-              latestAsset: assets[0] ? { id: assets[0].id, status: assets[0].status } : null,
+              // The composed prompt and a signed image URL travel with the row so
+              // the board can show the picture and the words that made it,
+              // without a round trip per page or a visit to the provider.
+              latestPromptText: latest?.prompt ?? null,
+              approvedPromptText: approved?.prompt ?? null,
+              latestAsset: assets[0]
+                ? { id: assets[0].id, status: assets[0].status, mimeType: assets[0].mimeType, widthPx: assets[0].widthPx, heightPx: assets[0].heightPx, accessUrl: await storage.createAccessUrl(assets[0].storageReference, 900) }
+                : null,
               activeJob: jobs.find((job) => ["queued", "in_progress", "cancellation_requested"].includes(job.localStatus)) ? true : false,
             };
-          });
+          }));
         }),
         delete: protectedProcedure.input(z.object({ projectId: z.string().min(1), pagePlanId: z.string().min(1) })).mutation(({ ctx, input }) => {
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
