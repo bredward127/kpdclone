@@ -43,3 +43,65 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }
+
+@layer components {
+  /* ---------------------------------------------------------------------------
+     Form fields.
+
+     Every text input and textarea in the studio carries class "field". This rule
+     is what gives them a visible box: without it they render as unstyled,
+     borderless text with no focus treatment, so an operator cannot tell where one
+     field ends, which one is active, or whether the grey text is their own typing
+     or a placeholder.
+     --------------------------------------------------------------------------- */
+  .field {
+    display: block;
+    width: 100%;
+    padding: 0.625rem 0.75rem;
+    border: 1.5px solid #cec7b6;
+    border-radius: 12px;
+    background: #fffdf8;
+    color: var(--ink);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    font-weight: 400;
+    box-shadow: inset 0 1px 2px rgba(32, 43, 60, .05);
+  }
+
+  /* Placeholders must never read as saved content. */
+  .field::placeholder {
+    color: #a49c8b;
+    opacity: 1;
+    font-style: italic;
+  }
+
+  .field:hover:not(:disabled):not(:focus) { border-color: #aba28f; }
+
+  /* The active field: navy border, plain-white ground and a navy ring, so the
+     field being typed in is obvious at a glance across a two-column grid. */
+  .field:focus,
+  .field:focus-visible {
+    /* The app-wide coral focus outline is unlayered, so it wins over this rule
+       and supplies the ring. Don't add a second ring here; change the border and
+       ground instead, which reads as one focus state rather than two. */
+    border-color: var(--navy);
+    background: #ffffff;
+    box-shadow: inset 0 1px 2px rgba(32, 43, 60, .03);
+  }
+
+  .field:disabled,
+  .field[readonly] {
+    background: #f0ede4;
+    color: var(--muted-ink);
+    border-color: #ddd6c6;
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+
+  textarea.field { resize: vertical; min-height: 5rem; }
+
+  /* Number inputs keep their spinner but sit on the same baseline as the rest. */
+  input[type="number"].field { -moz-appearance: textfield; appearance: textfield; }
+  input[type="number"].field::-webkit-outer-spin-button,
+  input[type="number"].field::-webkit-inner-spin-button { opacity: 1; height: 1.5rem; }
+}

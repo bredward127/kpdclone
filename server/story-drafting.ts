@@ -8,9 +8,23 @@ export type StoryDraft = z.infer<typeof storyDraftSchema>;
 
 type FalTextResult = { output?: unknown; choices?: Array<{ message?: { content?: unknown } }> };
 
+/**
+ * Fragments that appear in the documentation's own descriptive placeholders for
+ * these variables. A deployment that copies the guidance text into the value
+ * instead of the identifier it describes reaches FAL and is rejected there with
+ * a 400, far from the setting that caused it, so refuse it here with a message
+ * that names the variable.
+ */
+const PLACEHOLDER_MARKERS = ["you-select", "you select", "the-current", "the current", "your-", "your ", "<", ">", "replace", "example", "changeme", "change-me", "todo", "xxx", "placeholder"];
+
 function requiredEnv(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name]?.trim();
   if (!value) throw new Error(`${name} is not configured for FAL text drafting.`);
+  const lowered = value.toLowerCase();
+  const marker = PLACEHOLDER_MARKERS.find((candidate) => lowered.includes(candidate));
+  if (marker || /\s/.test(value)) {
+    throw new Error(`${name} is set to "${value}", which looks like descriptive placeholder text rather than a real identifier. Set it to the actual value from the FAL endpoint's model documentation.`);
+  }
   return value;
 }
 
@@ -19,6 +33,17 @@ function extractText(result: FalTextResult): string {
   const content = result.choices?.[0]?.message?.content;
   if (typeof content === "string") return content;
   throw new Error("FAL text drafting returned no text output.");
+}
+
+/**
+ * Chat models routinely wrap requested JSON in a markdown fence despite being
+ * told to return JSON only. Strip one fence before parsing rather than failing
+ * an otherwise valid draft.
+ */
+function parseDraftJson(text: string): unknown {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n?```$/i);
+  return JSON.parse(fenced ? fenced[1] : trimmed);
 }
 
 export async function draftStoryAndPages(
@@ -40,9 +65,12 @@ export async function draftStoryAndPages(
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     const status = await queue.status(endpoint, submitted.requestId);
+    // A queued request that fails reports its reason here. Without this the loop
+    // ignored it and spun out the full 90s only to report a generic timeout.
+    if (status.error) throw new FalProviderError(`FAL text drafting failed: ${status.error}${status.errorType ? ` (${status.errorType})` : ""}`, { classification: "provider_http", retryable: false });
     if (status.status === "COMPLETED") {
       const result = await queue.result(endpoint, submitted.requestId) as FalTextResult;
-      try { return storyDraftSchema.parse(JSON.parse(extractText(result))); } catch { throw new Error("FAL text drafting returned invalid structured JSON."); }
+      try { return storyDraftSchema.parse(parseDraftJson(extractText(result))); } catch { throw new Error("FAL text drafting returned invalid structured JSON."); }
     }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }

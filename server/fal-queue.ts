@@ -70,10 +70,47 @@ function safeJson(text: string): Record<string, unknown> {
   }
 }
 
+/**
+ * Pull the human-readable reason out of a FAL error body.
+ *
+ * FAL reports failures in several shapes depending on which layer rejected the
+ * call: `{error:{message}}` from the OpenAI-compatible router, `{detail}` from
+ * the gateway, and FastAPI's `{detail:[{loc,msg}]}` from input validation.
+ * Discarding all of it — as this used to — turns an actionable message such as
+ * "<value> is not a valid model ID" into an opaque "FAL rejected the queue
+ * operation", which is unactionable for whoever set the deployment variables.
+ */
+export function describeProviderBody(body: Record<string, unknown>): string {
+  const error = body.error;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  if (error && typeof error === "object") {
+    const message = (error as Record<string, unknown>).message;
+    if (typeof message === "string" && message.trim()) return message.trim();
+  }
+  const detail = body.detail;
+  if (typeof detail === "string" && detail.trim()) return detail.trim();
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return "";
+        const record = entry as Record<string, unknown>;
+        const msg = typeof record.msg === "string" ? record.msg : "";
+        const loc = Array.isArray(record.loc) ? record.loc.filter((part) => typeof part === "string" || typeof part === "number").join(".") : "";
+        return msg && loc ? `${loc}: ${msg}` : msg;
+      })
+      .filter(Boolean);
+    if (parts.length) return parts.join("; ");
+  }
+  const message = body.message;
+  if (typeof message === "string" && message.trim()) return message.trim();
+  return "";
+}
+
 function providerError(response: Response, body: Record<string, unknown>): FalProviderError {
   const status = response.status;
-  if (status === 404) return new FalProviderError("FAL request was not found.", { classification: "provider_not_found", retryable: false, providerStatus: status });
-  return new FalProviderError("FAL rejected the queue operation.", { classification: "provider_http", retryable: status >= 500 || status === 429, providerStatus: status });
+  const detail = describeProviderBody(body);
+  if (status === 404) return new FalProviderError(detail ? `FAL request was not found (HTTP 404): ${detail}` : "FAL request was not found.", { classification: "provider_not_found", retryable: false, providerStatus: status });
+  return new FalProviderError(detail ? `FAL rejected the queue operation (HTTP ${status}): ${detail}` : `FAL rejected the queue operation (HTTP ${status}).`, { classification: "provider_http", retryable: status >= 500 || status === 429, providerStatus: status });
 }
 
 export function createFalQueueClient(config: FalConfig, dependencies: QueueDependencies = {}) {
