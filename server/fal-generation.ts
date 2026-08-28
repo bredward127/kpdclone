@@ -4,7 +4,7 @@ import { getProjectForUser } from "./db";
 import { createAuditEvent, getGenerationJobForUser, getGeneratedAssetForUser } from "./db-studio";
 import { assertNoBlockingLint, getPromptVersionForUser } from "./prompt-composer";
 import { classifyContentPolicy, recordContentPolicyReview } from "./publishing";
-import { getFalModel } from "./fal-models";
+import { getFalModel, listSelectableFalModels } from "./fal-models";
 import { validateReferenceImage, getReferenceValidationLimits } from "./reference-validation";
 import { analyzeAssetQuality } from "./asset-quality";
 import type { PrivateStorage } from "./storage";
@@ -73,7 +73,15 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
   const validationLimits = dependencies.validationLimits ?? getReferenceValidationLimits();
   const maxActivePerUser = dependencies.maxActivePerUser ?? 3;
   const maxActivePerProject = dependencies.maxActivePerProject ?? 2;
-  const modelApproval = dependencies.modelApproval ?? ((endpointId: string) => getFalModel(endpointId)?.active === true);
+  /**
+   * "Active" must mean the same thing here as it does in the model list the
+   * interface reads. listSelectableFalModels() also honours FAL_ACTIVE_ENDPOINTS,
+   * while this check used to consult only the registry's hardcoded `active`
+   * flag. A deployment that activated an endpoint through that variable saw the
+   * model offered and selectable, composed and froze a prompt against it, and
+   * was then refused at submission as "not active and administrator-approved".
+   */
+  const modelApproval = dependencies.modelApproval ?? ((endpointId: string) => listSelectableFalModels().some((model) => model.endpointId === endpointId));
 
   function enforceConcurrency(db: AppDatabase, userId: string, projectId: string): void {
     const userActive = db.prepare(`SELECT COUNT(*) AS count FROM generation_jobs WHERE user_id = ? AND local_status IN ('queued', 'in_progress', 'cancellation_requested')`).get(userId) as { count: number };
