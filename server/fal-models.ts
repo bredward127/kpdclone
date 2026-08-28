@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ImagePricing } from "../shared/image-cost";
 
 export const falModelInputSchema = z.object({
   prompt: z.string().min(1),
@@ -16,12 +17,9 @@ export type FalModelConfig = {
   displayName: string;
   allowedInputSchema: typeof falModelInputSchema;
   supportedAspectRatios: readonly ["1:1", "3:2", "2:3"];
-  pricing: {
-    unit: string;
-    amount: number | null;
-    currency: string | null;
-    display: string | null;
-  };
+  pricing: ImagePricing & { unit: string; currency: string; display: string };
+  /** True when the endpoint bills by quality tier and accepts a `quality` input. */
+  honoursQualityTier: boolean;
   active: boolean;
   docsReviewedAt: string;
   docsUrl: string;
@@ -37,13 +35,39 @@ export const falModelRegistry: readonly FalModelConfig[] = [
     supportedAspectRatios: ["1:1", "3:2", "2:3"],
     pricing: {
       unit: "image",
-      amount: null,
-      currency: null,
-      display: null,
+      currency: "USD",
+      display: "$0.009 low / $0.034 medium / $0.133 high per 1024x1024 image",
+      perImageUsd: { low: 0.009, medium: 0.034, high: 0.133 },
+      flatPerImageUsd: null,
+      note: "Billed by quality tier. The app previously sent no quality field, so every image was billed at the provider default -- the top tier.",
     },
+    honoursQualityTier: true,
     active: false,
     docsReviewedAt: "2026-08-27",
     docsUrl: "https://fal.ai/docs/model-api-reference/image-generation-api/gpt-image-1.5",
+    requiresAdminApproval: true,
+  },
+  {
+    // Roughly forty times cheaper than gpt-image-1.5 at its top tier, and well
+    // suited to flat black line art, which has no gradients or lighting for a
+    // heavier model to preserve.
+    endpointId: "fal-ai/flux/schnell",
+    endpointUrl: "https://fal.run/fal-ai/flux/schnell",
+    displayName: "FLUX.1 schnell",
+    allowedInputSchema: falModelInputSchema,
+    supportedAspectRatios: ["1:1", "3:2", "2:3"],
+    pricing: {
+      unit: "image",
+      currency: "USD",
+      display: "$0.003 per megapixel (about $0.003 per 1024x1024 image)",
+      perImageUsd: null,
+      flatPerImageUsd: 0.003,
+      note: "Billed per megapixel, rounded up. A 1024x1024 image is one megapixel.",
+    },
+    honoursQualityTier: false,
+    active: false,
+    docsReviewedAt: "2026-08-28",
+    docsUrl: "https://fal.ai/models/fal-ai/flux/schnell",
     requiresAdminApproval: true,
   },
 ];

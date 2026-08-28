@@ -5,6 +5,7 @@ import { createAuditEvent, getGenerationJobForUser, getGeneratedAssetForUser } f
 import { assertNoBlockingLint, getPromptVersionForUser } from "./prompt-composer";
 import { classifyContentPolicy, recordContentPolicyReview } from "./publishing";
 import { getFalModel, listSelectableFalModels } from "./fal-models";
+import { imageSizeForAspectRatio } from "../shared/image-cost";
 import { validateReferenceImage, getReferenceValidationLimits } from "./reference-validation";
 import { analyzeAssetQuality } from "./asset-quality";
 import type { PrivateStorage } from "./storage";
@@ -168,7 +169,21 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
     }
     const jobId = crypto.randomUUID();
     const createdAt = now();
-    const modelInputs = { prompt: prompt.prompt, negative_prompt: prompt.negativePrompt, aspect_ratio: prompt.aspectRatio, seed: prompt.seed, reference_asset_ids: prompt.referenceAssetIds, model: prompt.generationModel };
+    // quality and image_size were never sent. Without a quality the provider
+    // applied its own default -- the most expensive tier -- so every page was
+    // billed at roughly fifteen times the low-tier price.
+    const project = getProjectForUser(db, userId, input.projectId);
+    const modelConfig = getFalModel(input.generationEndpoint);
+    const modelInputs: Record<string, unknown> = {
+      prompt: prompt.prompt,
+      negative_prompt: prompt.negativePrompt,
+      aspect_ratio: prompt.aspectRatio,
+      image_size: imageSizeForAspectRatio(prompt.aspectRatio),
+      seed: prompt.seed,
+      reference_asset_ids: prompt.referenceAssetIds,
+      model: prompt.generationModel,
+    };
+    if (modelConfig?.honoursQualityTier !== false) modelInputs.quality = project?.imageQuality ?? "low";
     db.prepare(`INSERT INTO generation_jobs
       (id, user_id, project_id, page_plan_id, prompt_version_id, generation_model, generation_endpoint,
        seed, status, local_status, model_inputs_json, expected_output_constraints_json, idempotency_key, request_kind, source_asset_id, queued_at, created_at, updated_at)

@@ -17,14 +17,25 @@ export function isColoringLineArt(style: string | null | undefined): boolean {
   return style === "coloring_line_art";
 }
 
-/** Positive rules. Every one is a property a colourable page must have. */
+/**
+ * Positive rules. Every one is a property a colourable page must have.
+ *
+ * These previously said "large, open, uncluttered areas; avoid fine detail",
+ * which the model read as permission to draw one small subject on an empty
+ * page. A coloring page has to be worth colouring: the correction is more
+ * enclosed regions, not thinner lines.
+ */
 export const COLORING_PAGE_RULES: readonly string[] = [
   "Pure black-and-white line art intended to be coloured in by hand.",
   "Every shape is fully enclosed by an unbroken outline so colour cannot leak between regions.",
   "Uniform, confident stroke weight throughout; no tapering sketch lines and no double or sketchy contours.",
   "Interiors are left empty white. No fills, no greys, no gradients, no shading, no hatching, no cross-hatching, no stippling, no textures.",
-  "Large, open, uncluttered areas sized for a child's crayon or marker; avoid fine detail that cannot be coloured.",
-  "Pure white background. No background wash, no vignette, no frame or decorative border unless the scene direction asks for one.",
+  "Fill the page. Draw a complete scene, not an isolated subject floating on white: include the floor or ground, the walls or sky, and the furniture, plants, toys, patterns and background objects the setting implies.",
+  "Aim for roughly fifteen to thirty separate enclosed regions a child can colour differently, spread across the whole page rather than clustered in the middle.",
+  "Give large surfaces something to colour: patterns on bedding and clothing, planks or grain on wood, panes in windows, leaves on plants, tiles or boards on floors. Keep each of those shapes big enough to colour inside.",
+  "Shapes stay generous and crayon-sized. Detail comes from having more distinct regions, never from thinner lines or tiny marks.",
+  "The subject stays the clear focus; background elements support it and never crowd or overlap it into confusion.",
+  "Pure white background behind the scene. No background wash, no vignette, no frame or decorative border unless the scene direction asks for one.",
   "Flat, straightforward viewpoint with the subject clearly readable as a silhouette.",
   "No lettering, captions, page numbers, signatures or watermarks anywhere in the image.",
 ];

@@ -10,7 +10,7 @@ import { lifecycleStatuses, pageApprovalStates } from "../shared/studio";
 import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
 import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset } from "./reference-assets";
 import { getReferenceValidationLimits } from "./reference-validation";
-import { draftStoryAndPages } from "./story-drafting";
+import { draftBookBrief, draftStoryAndPages } from "./story-drafting";
 import { composePromptFromSavedProject, createPromptVersion, freezePromptVersion, getPromptVersionForUser, listPromptVersions, restorePromptVersion } from "./prompt-composer";
 import { createFalGenerationService, type FalGenerationService } from "./fal-generation";
 import { getFalQueueClient } from "./fal-queue";
@@ -57,6 +57,7 @@ const projectInput = z.object({
   name: z.string().trim().min(1).max(120),
   brief: z.string().trim().max(5000).default(""),
   interiorArtStyle: z.enum(["full_color", "coloring_line_art"]).optional(),
+  imageQuality: z.enum(["low", "medium", "high"]).optional(),
 });
 const kdpPageInput = z.object({ pageNumber: z.number().int().positive(), blank: z.boolean(), assetId: z.string().optional(), effectiveDpi: z.number().optional(), textFontIds: z.array(z.string()).default([]) });
 const kdpPreflightInput = z.object({ projectId: z.string().min(1), trimWidthInches: z.number().positive(), trimHeightInches: z.number().positive(), bleed: z.boolean(), interiorPageCount: z.number().int().positive(), readingDirection: z.enum(["ltr", "rtl"]), interior: z.object({ pdfBytesBase64: z.string().min(1).max(900_000_000), widthInches: z.number().positive(), heightInches: z.number().positive(), pageCount: z.number().int().positive(), pages: z.array(kdpPageInput), fontsEmbedded: z.array(z.string()), manifestRulesetVersion: z.string().optional(), manifestReadingDirection: z.enum(["ltr", "rtl"]).optional(), measuredOutsideMarginInches: z.number().nonnegative(), measuredGutterMarginInches: z.number().nonnegative() }), cover: z.object({ pdfBytesBase64: z.string().min(1).max(900_000_000), pageCount: z.number().int().positive(), widthInches: z.number().positive(), heightInches: z.number().positive(), expectedWidthInches: z.number().positive(), expectedHeightInches: z.number().positive(), templateCurrent: z.boolean(), templateSourceUrl: z.string().url().optional(), templateFingerprintMatches: z.boolean(), safeZoneWarnings: z.array(z.string()), bleedCovered: z.boolean(), barcodeClear: z.boolean(), spineEligible: z.boolean(), spineTextInsideSafeZone: z.boolean(), flattened: z.boolean(), hasGuideContent: z.boolean(), sourceAssetIds: z.array(z.string()) }), expectedInteriorWidthInches: z.number().positive(), expectedInteriorHeightInches: z.number().positive(), permittedFontIds: z.array(z.string()) });
@@ -154,6 +155,16 @@ export function createAppRouter(
           const brief = createBookBrief(db, ctx.user.id, { id: crypto.randomUUID(), ...input });
           recordWorkflowEvent(ctx.user.id, input.projectId, "book_brief", brief.id, "brief_changed", JSON.stringify({ version: brief.version }));
           return brief;
+        }),
+        draftBriefWithAi: protectedProcedure.input(projectIdInput.extend({ idea: z.string().trim().min(3).max(2_000) })).mutation(async ({ ctx, input }) => {
+          enforceLimit(policyLimiter, ctx.user.id, "AI planning");
+          const project = getProjectForUser(db, ctx.user.id, input.projectId);
+          if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          try {
+            return await draftBookBrief(input.idea, { interiorArtStyle: project.interiorArtStyle, bookType: project.bookType, env: process.env });
+          } catch (error) {
+            throw new TRPCError({ code: "PRECONDITION_FAILED", message: error instanceof Error ? error.message : "The brief could not be drafted." });
+          }
         }),
         draftWithAi: protectedProcedure.input(projectIdInput.extend({ pageCount: z.number().int().positive().max(200), pageNumbers: z.array(z.number().int().positive()).max(200).optional() })).mutation(async ({ ctx, input }) => {
           enforceLimit(policyLimiter, ctx.user.id, "AI planning");
@@ -599,6 +610,7 @@ export function createAppRouter(
             name: input.name,
             brief: input.brief,
             interiorArtStyle: input.interiorArtStyle,
+            imageQuality: input.imageQuality,
           });
           if (!project) {
             throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });

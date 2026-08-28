@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Info, PenLine, Save } from "lucide-react";
+import { CheckCircle2, Info, Loader2, PenLine, Save, Sparkles } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 
 const fields = [
@@ -23,6 +23,19 @@ export default function BookBriefEditor({ projectId }: { projectId: string }) {
   const updateProject = trpc.project.update.useMutation();
   const utils = trpc.useUtils();
   const coloringBook = project.data?.interiorArtStyle === "coloring_line_art";
+  const [idea, setIdea] = useState("");
+  const draftBrief = trpc.studio.brief.draftBriefWithAi.useMutation();
+  const fillWithAi = () => {
+    if (!idea.trim()) { setNotice("Describe the book in a sentence first, then let the AI fill the fields."); return; }
+    setNotice("");
+    draftBrief.mutate({ projectId, idea: idea.trim() }, {
+      onSuccess: (draft) => {
+        setForm((current) => ({ ...current, ...draft }));
+        setNotice("All six fields filled from your idea. Edit anything you want, then save — nothing is saved until you do.");
+      },
+      onError: (error) => setNotice(error.message),
+    });
+  };
   const setInteriorArtStyle = (style: "full_color" | "coloring_line_art") => {
     updateProject.mutate({ projectId, interiorArtStyle: style }, {
       onSuccess: async () => { await Promise.all([utils.project.get.invalidate({ projectId }), project.refetch()]); setNotice(style === "coloring_line_art" ? "Interior set to coloring pages. Every page prompt now asks for black line art to be coloured in." : "Interior set to full colour illustration."); },
@@ -51,5 +64,32 @@ export default function BookBriefEditor({ projectId }: { projectId: string }) {
           </label>
         ))}
       </div>
-    </fieldset><div className="mt-5 grid gap-5 md:grid-cols-2">{fields.map(([key, label, help, placeholder]) => <label key={key} className={`${key === "briefText" || key === "visualStyleAnchors" || key === "characterBible" || key === "propAndSettingBible" || key === "negativePrompt" ? "md:col-span-2" : ""} block text-sm font-semibold text-[var(--ink)]`}><span className="inline-flex items-center">{label}<Help text={help} /></span>{key === "bookType" || key === "audience" ? <input value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2" /> : <textarea value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2 min-h-28" rows={key === "briefText" ? 5 : 4} />}</label>)}</div><div className="mt-6 flex flex-wrap items-center gap-3"><button type="button" onClick={saveDraft} disabled={save.isPending || !dirty} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"><Save size={16} />{save.isPending ? "Saving draft…" : "Save draft"}</button>{!dirty && brief.data ? <span className="inline-flex items-center gap-2 text-sm text-[#356b63]"><CheckCircle2 size={16} />Saved on the server</span> : <span className="text-xs text-[var(--muted-ink)]">Your changes are not durable until you save.</span>}{notice ? <p className="w-full text-sm text-[#356b63]" role="status">{notice}</p> : null}</div></section>;
+    </fieldset>
+    <fieldset className="mt-5 rounded-2xl border border-[var(--line)] bg-[#fbfaf5] p-4">
+      <legend className="mono px-2 text-[10px] uppercase tracking-[0.16em] text-[var(--muted-ink)]">Image quality &amp; cost</legend>
+      <p className="text-xs leading-5 text-[var(--muted-ink)]">The provider bills by quality tier. Line art carries no gradients or lighting, so the low tier produces the same drawing for a fraction of the price. Change this only if a page genuinely needs it.</p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        {([["low", "Low", "About $0.009 per image. Recommended for coloring pages."], ["medium", "Medium", "About $0.034 per image."], ["high", "High", "About $0.133 per image. Rarely needed for line art."]] as const).map(([value, label, description]) => (
+          <label key={value} className={`flex cursor-pointer gap-2 rounded-xl border p-3 ${(project.data?.imageQuality ?? "low") === value ? "border-[var(--navy)] bg-[var(--paper-strong)]" : "border-[var(--line)]"}`}>
+            <input type="radio" name="imageQuality" checked={(project.data?.imageQuality ?? "low") === value} onChange={() => updateProject.mutate({ projectId, imageQuality: value }, { onSuccess: async () => { await Promise.all([utils.project.get.invalidate({ projectId }), project.refetch()]); setNotice(`Image quality set to ${label.toLowerCase()}.`); }, onError: (error) => setNotice(error.message) })} disabled={updateProject.isPending || project.isLoading} className="mt-0.5 h-4 w-4 accent-[#203348]" />
+            <span className="min-w-0"><span className="block text-sm font-semibold text-[var(--ink)]">{label}</span><span className="mt-0.5 block text-[11px] leading-4 text-[var(--muted-ink)]">{description}</span></span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+    <div className="mt-5 rounded-2xl border border-[#d5c09a] bg-[#fff8e7] p-4">
+      <p className="text-sm font-semibold text-[var(--ink)]">Don't want to fill this in by hand?</p>
+      <p className="mt-1 text-xs leading-5 text-[var(--muted-ink)]">Describe the book in a sentence and the AI writes every field below, including the recurring props and settings that keep objects from changing between pages. Nothing is saved until you press Save.</p>
+      <div className="mt-3 flex flex-wrap items-end gap-3">
+        <label className="min-w-[260px] flex-1 text-xs font-semibold text-[var(--ink)]">
+          <span>Your idea in one sentence</span>
+          <input value={idea} onChange={(event) => setIdea(event.target.value)} placeholder="A shy raccoon who learns to ask for help, in a moonlit forest" className="field mt-2" />
+        </label>
+        <button type="button" onClick={fillWithAi} disabled={draftBrief.isPending} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-50">
+          {draftBrief.isPending ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+          {draftBrief.isPending ? "Writing the brief…" : "Fill every field with AI"}
+        </button>
+      </div>
+    </div>
+    <div className="mt-5 grid gap-5 md:grid-cols-2">{fields.map(([key, label, help, placeholder]) => <label key={key} className={`${key === "briefText" || key === "visualStyleAnchors" || key === "characterBible" || key === "propAndSettingBible" || key === "negativePrompt" ? "md:col-span-2" : ""} block text-sm font-semibold text-[var(--ink)]`}><span className="inline-flex items-center">{label}<Help text={help} /></span>{key === "bookType" || key === "audience" ? <input value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2" /> : <textarea value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2 min-h-28" rows={key === "briefText" ? 5 : 4} />}</label>)}</div><div className="mt-6 flex flex-wrap items-center gap-3"><button type="button" onClick={saveDraft} disabled={save.isPending || !dirty} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"><Save size={16} />{save.isPending ? "Saving draft…" : "Save draft"}</button>{!dirty && brief.data ? <span className="inline-flex items-center gap-2 text-sm text-[#356b63]"><CheckCircle2 size={16} />Saved on the server</span> : <span className="text-xs text-[var(--muted-ink)]">Your changes are not durable until you save.</span>}{notice ? <p className="w-full text-sm text-[#356b63]" role="status">{notice}</p> : null}</div></section>;
 }

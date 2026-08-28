@@ -19,6 +19,8 @@ export type ProjectRecord = {
   bookType: "picture_book" | "early_reader" | "chapter_book" | "activity_book" | "other";
   /** Coloring-page interiors are line art, not de-coloured illustration. */
   interiorArtStyle: "full_color" | "coloring_line_art";
+  /** Provider quality tier. Line art does not need the expensive tiers. */
+  imageQuality: "low" | "medium" | "high";
   readingDirection: "ltr" | "rtl";
   trimWidthInches: number;
   trimHeightInches: number;
@@ -82,7 +84,7 @@ export function listProjects(db: AppDatabase, userId: string): ProjectRecord[] {
   return db
     .prepare(
       `SELECT id, user_id AS userId, name, brief,
-              book_type AS bookType, interior_art_style AS interiorArtStyle, reading_direction AS readingDirection, trim_width_inches AS trimWidthInches, trim_height_inches AS trimHeightInches,
+              book_type AS bookType, interior_art_style AS interiorArtStyle, image_quality AS imageQuality, reading_direction AS readingDirection, trim_width_inches AS trimWidthInches, trim_height_inches AS trimHeightInches,
               bleed_preference AS bleedPreference, paper_selection AS paperSelection, ink_selection AS inkSelection,
               page_count AS pageCount, created_at AS createdAt, updated_at AS updatedAt
        FROM book_projects
@@ -107,7 +109,7 @@ export function getProjectForUser(db: AppDatabase, userId: string, projectId: st
     db
       .prepare(
         `SELECT id, user_id AS userId, name, brief,
-                book_type AS bookType, interior_art_style AS interiorArtStyle, reading_direction AS readingDirection, trim_width_inches AS trimWidthInches, trim_height_inches AS trimHeightInches,
+                book_type AS bookType, interior_art_style AS interiorArtStyle, image_quality AS imageQuality, reading_direction AS readingDirection, trim_width_inches AS trimWidthInches, trim_height_inches AS trimHeightInches,
                 bleed_preference AS bleedPreference, paper_selection AS paperSelection, ink_selection AS inkSelection,
                 page_count AS pageCount, created_at AS createdAt, updated_at AS updatedAt
          FROM book_projects
@@ -121,7 +123,7 @@ export function updateProjectForUser(
   db: AppDatabase,
   userId: string,
   projectId: string,
-  input: { name?: string; brief?: string; interiorArtStyle?: ProjectRecord["interiorArtStyle"] },
+  input: { name?: string; brief?: string; interiorArtStyle?: ProjectRecord["interiorArtStyle"]; imageQuality?: ProjectRecord["imageQuality"] },
 ): ProjectRecord | null {
   const existing = getProjectForUser(db, userId, projectId);
   if (!existing) return null;
@@ -129,11 +131,12 @@ export function updateProjectForUser(
   const name = input.name ?? existing.name;
   const brief = input.brief ?? existing.brief;
   const interiorArtStyle = input.interiorArtStyle ?? existing.interiorArtStyle;
+  const imageQuality = input.imageQuality ?? existing.imageQuality;
   db.prepare(
     `UPDATE book_projects
-     SET name = @name, title = @name, brief = @brief, interior_art_style = @interiorArtStyle, updated_at = @updatedAt
+     SET name = @name, title = @name, brief = @brief, interior_art_style = @interiorArtStyle, image_quality = @imageQuality, updated_at = @updatedAt
      WHERE id = @projectId AND user_id = @userId`,
-  ).run({ name, brief, interiorArtStyle, projectId, userId, updatedAt: new Date().toISOString() });
+  ).run({ name, brief, interiorArtStyle, imageQuality, projectId, userId, updatedAt: new Date().toISOString() });
 
   return getProjectForUser(db, userId, projectId);
 }

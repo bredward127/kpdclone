@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, CircleDashed, Grid2x2, ImageIcon, List, Loader2, Lock, Sparkles, X } from "lucide-react";
+import { estimateImageCostUsd, formatUsd } from "../../../shared/image-cost";
 import { trpc } from "@/lib/trpc";
 import { ErrorState, LoadingState } from "./States";
 
@@ -25,6 +26,9 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
 
   const rows = board.data ?? [];
   const activeModel = models.data?.[0] ?? null;
+  const project = trpc.project.get.useQuery({ projectId });
+  const quality = project.data?.imageQuality ?? "low";
+  const costFor = (count: number) => activeModel ? formatUsd(estimateImageCostUsd(activeModel.pricing, quality, count)) : "unknown cost";
   const readyToGenerate = useMemo(() => rows.filter((row) => row.approvedPromptVersion && !row.activeJob), [rows]);
   const freezable = useMemo(() => rows.filter((row) => row.latestPromptVersion && !row.approvedPromptVersion && !row.latestPromptVersion.blockingLintCount), [rows]);
   const selectedRows = useMemo(() => rows.filter((row) => selected.includes(row.pagePlanId)), [rows, selected]);
@@ -82,7 +86,7 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
         done += 1;
       }
       await refresh();
-      setNotice({ text: `${done} page${done === 1 ? "" : "s"} submitted. Each one is a billable image; watch status below.`, kind: "info" });
+      setNotice({ text: `${done} page${done === 1 ? "" : "s"} submitted, about ${costFor(done)} at ${quality} quality.`, kind: "info" });
     } catch (error) {
       await refresh();
       setNotice({ text: `Stopped after ${done} of ${eligible.length}: ${error instanceof Error ? error.message : "a page could not be submitted."}`, kind: "error" });
@@ -104,6 +108,7 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
         <div className="rounded-2xl border border-[var(--line)] bg-[#fbfaf5] px-4 py-3 text-right">
           <p className="mono text-[9px] uppercase tracking-[0.16em] text-[var(--muted-ink)]">Ready to generate</p>
           <p className="serif text-2xl text-[var(--ink)]">{readyToGenerate.length}<span className="text-sm text-[var(--muted-ink)]"> / {rows.length}</span></p>
+          {activeModel ? <p className="mt-1 text-[11px] leading-4 text-[var(--muted-ink)]">{costFor(1)} per image at <strong>{quality}</strong> quality<br /><span title={activeModel.pricing.display}>{activeModel.displayName}</span></p> : null}
         </div>
       </div>
 
@@ -116,10 +121,10 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
         </label>
         <span className="mx-1 h-5 w-px bg-[#ddd6c6]" />
         <button type="button" disabled={Boolean(busy) || !selectedRows.length} onClick={() => void freezePages(selectedRows)} className="inline-flex items-center gap-2 rounded-full border border-[var(--navy)] px-4 py-2 text-xs font-semibold text-[var(--navy)] disabled:opacity-45"><Lock size={14} />Freeze selected</button>
-        <button type="button" disabled={Boolean(busy) || !selectedRows.length} onClick={() => void generatePages(selectedRows)} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-4 py-2 text-xs font-semibold text-white disabled:opacity-45"><Sparkles size={14} />Generate selected</button>
+        <button type="button" disabled={Boolean(busy) || !selectedRows.length} onClick={() => void generatePages(selectedRows)} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-4 py-2 text-xs font-semibold text-white disabled:opacity-45"><Sparkles size={14} />Generate selected{selectedRows.length ? ` · ${costFor(selectedRows.filter((row) => row.approvedPromptVersion && !row.activeJob).length)}` : ""}</button>
         <span className="mx-1 h-5 w-px bg-[#ddd6c6]" />
         <button type="button" disabled={Boolean(busy) || !freezable.length} onClick={() => void freezePages(freezable)} className="rounded-full border border-[var(--line)] px-4 py-2 text-xs font-semibold text-[var(--ink)] disabled:opacity-45">Freeze all drafts ({freezable.length})</button>
-        <button type="button" disabled={Boolean(busy) || !readyToGenerate.length} onClick={() => void generatePages(readyToGenerate)} className="rounded-full border border-[var(--line)] px-4 py-2 text-xs font-semibold text-[var(--ink)] disabled:opacity-45">Generate all ready ({readyToGenerate.length})</button>
+        <button type="button" disabled={Boolean(busy) || !readyToGenerate.length} onClick={() => void generatePages(readyToGenerate)} className="rounded-full border border-[var(--line)] px-4 py-2 text-xs font-semibold text-[var(--ink)] disabled:opacity-45">Generate all ready ({readyToGenerate.length}) · {costFor(readyToGenerate.length)}</button>
         <span className="ml-auto inline-flex overflow-hidden rounded-full border border-[var(--line)]">
           <button type="button" onClick={() => setView("gallery")} aria-pressed={view === "gallery"} className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold ${view === "gallery" ? "bg-[var(--navy)] text-white" : "text-[var(--ink)]"}`}><Grid2x2 size={13} />Gallery</button>
           <button type="button" onClick={() => setView("list")} aria-pressed={view === "list"} className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold ${view === "list" ? "bg-[var(--navy)] text-white" : "text-[var(--ink)]"}`}><List size={13} />List</button>
