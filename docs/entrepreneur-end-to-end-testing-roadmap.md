@@ -153,8 +153,15 @@ In the Render service, open **Environment** or **Environment Variables**, then c
 | `PRIVATE_STORAGE_DIR` | `/var/data/private-storage` | No |
 | `SESSION_SECRET` | Generate a long random value in a password manager | **Yes** |
 | `FAL_KEY` | Your FAL server credential | **Yes** |
-| `FAL_SMOKE_ENDPOINT` | The exact administrator-reviewed inexpensive FAL endpoint identifier | No |
+| `FAL_SMOKE_ENDPOINT` | The exact administrator-reviewed inexpensive FAL image endpoint identifier | No |
+| `FAL_ACTIVE_ENDPOINTS` | The exact reviewed FAL image endpoint(s) Page Studio may use, comma-separated | No |
+| `FAL_TEXT_ENDPOINT` | `openrouter/router/openai/v1/chat/completions` after reviewing the current FAL page | No |
+| `FAL_TEXT_MODEL` | The current text model identifier selected in that FAL endpoint’s model documentation | No |
 | `FAL_WEBHOOK_ENABLED` | `false` for the first local-style generation check; `true` only after the HTTPS callback is ready | No |
+
+#### FAL story-drafting setup
+
+The current Blueprint AI drafting flow uses FAL for story summaries, page text, and scene directions. The supplied FAL reference identifies the OpenAI-compatible endpoint as `openrouter/router/openai/v1/chat/completions` and recommends the `@fal-ai/client` queue pattern. Set `FAL_TEXT_ENDPOINT` to that endpoint and set `FAL_TEXT_MODEL` to a currently supported model identifier selected from the endpoint’s live documentation. Do not use the older `fal-ai/any-llm` endpoint; FAL currently marks it deprecated. The application uses the existing server-only `FAL_KEY` for both image and text requests. It never sends that key to the browser.
 
 #### Add these when production callbacks are ready
 
