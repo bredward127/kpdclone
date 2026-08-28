@@ -12,6 +12,8 @@ export type BookBriefRecord = {
   audience: string;
   visualStyleAnchors: string;
   characterBible: string;
+  /** Recurring objects and locations, repeated verbatim into every page prompt. */
+  propAndSettingBible: string;
   negativePrompt: string;
   version: number;
   status: LifecycleStatus;
@@ -40,7 +42,7 @@ export function getBriefForProject(db: AppDatabase, userId: string, projectId: s
       .prepare(
         `SELECT id, user_id AS userId, project_id AS projectId, brief_text AS briefText,
                 book_type AS bookType, audience, visual_style_anchors AS visualStyleAnchors,
-                character_bible AS characterBible, negative_prompt AS negativePrompt,
+                character_bible AS characterBible, prop_and_setting_bible AS propAndSettingBible, negative_prompt AS negativePrompt,
                 version, status, created_at AS createdAt, updated_at AS updatedAt
          FROM book_briefs
          WHERE user_id = ? AND project_id = ?
@@ -328,6 +330,7 @@ export function createBookBrief(
     audience: string;
     visualStyleAnchors: string;
     characterBible: string;
+    propAndSettingBible?: string;
     negativePrompt: string;
   },
 ): BookBriefRecord {
@@ -336,9 +339,9 @@ export function createBookBrief(
   const now = new Date().toISOString();
   db.prepare(
     `INSERT INTO book_briefs
-      (id, user_id, project_id, brief_text, book_type, audience, visual_style_anchors, character_bible, negative_prompt, version, created_at, updated_at)
-     VALUES (@id, @userId, @projectId, @briefText, @bookType, @audience, @visualStyleAnchors, @characterBible, @negativePrompt, @version, @now, @now)`,
-  ).run({ ...input, userId, version, now });
+      (id, user_id, project_id, brief_text, book_type, audience, visual_style_anchors, character_bible, prop_and_setting_bible, negative_prompt, version, created_at, updated_at)
+     VALUES (@id, @userId, @projectId, @briefText, @bookType, @audience, @visualStyleAnchors, @characterBible, @propAndSettingBible, @negativePrompt, @version, @now, @now)`,
+  ).run({ ...input, propAndSettingBible: input.propAndSettingBible ?? "", userId, version, now });
   return getBriefForProject(db, userId, input.projectId)!;
 }
 

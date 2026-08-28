@@ -56,6 +56,7 @@ const projectIdInput = z.object({ projectId: z.string().min(1) });
 const projectInput = z.object({
   name: z.string().trim().min(1).max(120),
   brief: z.string().trim().max(5000).default(""),
+  interiorArtStyle: z.enum(["full_color", "coloring_line_art"]).optional(),
 });
 const kdpPageInput = z.object({ pageNumber: z.number().int().positive(), blank: z.boolean(), assetId: z.string().optional(), effectiveDpi: z.number().optional(), textFontIds: z.array(z.string()).default([]) });
 const kdpPreflightInput = z.object({ projectId: z.string().min(1), trimWidthInches: z.number().positive(), trimHeightInches: z.number().positive(), bleed: z.boolean(), interiorPageCount: z.number().int().positive(), readingDirection: z.enum(["ltr", "rtl"]), interior: z.object({ pdfBytesBase64: z.string().min(1).max(900_000_000), widthInches: z.number().positive(), heightInches: z.number().positive(), pageCount: z.number().int().positive(), pages: z.array(kdpPageInput), fontsEmbedded: z.array(z.string()), manifestRulesetVersion: z.string().optional(), manifestReadingDirection: z.enum(["ltr", "rtl"]).optional(), measuredOutsideMarginInches: z.number().nonnegative(), measuredGutterMarginInches: z.number().nonnegative() }), cover: z.object({ pdfBytesBase64: z.string().min(1).max(900_000_000), pageCount: z.number().int().positive(), widthInches: z.number().positive(), heightInches: z.number().positive(), expectedWidthInches: z.number().positive(), expectedHeightInches: z.number().positive(), templateCurrent: z.boolean(), templateSourceUrl: z.string().url().optional(), templateFingerprintMatches: z.boolean(), safeZoneWarnings: z.array(z.string()), bleedCovered: z.boolean(), barcodeClear: z.boolean(), spineEligible: z.boolean(), spineTextInsideSafeZone: z.boolean(), flattened: z.boolean(), hasGuideContent: z.boolean(), sourceAssetIds: z.array(z.string()) }), expectedInteriorWidthInches: z.number().positive(), expectedInteriorHeightInches: z.number().positive(), permittedFontIds: z.array(z.string()) });
@@ -144,6 +145,7 @@ export function createAppRouter(
           audience: z.string().max(500),
           visualStyleAnchors: z.string().max(10_000),
           characterBible: z.string().max(10_000),
+          propAndSettingBible: z.string().max(10_000).default(""),
           negativePrompt: z.string().max(10_000),
         })).mutation(({ ctx, input }) => {
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) {
@@ -157,7 +159,8 @@ export function createAppRouter(
           enforceLimit(policyLimiter, ctx.user.id, "AI planning");
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
           try {
-            return await draftStoryAndPages(getBriefForProject(db, ctx.user.id, input.projectId), listPagePlans(db, ctx.user.id, input.projectId), input.pageCount, process.env, { targetPageNumbers: input.pageNumbers });
+            const project = getProjectForUser(db, ctx.user.id, input.projectId);
+            return await draftStoryAndPages(getBriefForProject(db, ctx.user.id, input.projectId), listPagePlans(db, ctx.user.id, input.projectId), input.pageCount, process.env, { targetPageNumbers: input.pageNumbers, interiorArtStyle: project?.interiorArtStyle });
           } catch (error) {
             throw new TRPCError({ code: "PRECONDITION_FAILED", message: error instanceof Error ? error.message : "AI-assisted planning is not configured." });
           }
@@ -588,6 +591,7 @@ export function createAppRouter(
           const project = updateProjectForUser(db, ctx.user.id, input.projectId, {
             name: input.name,
             brief: input.brief,
+            interiorArtStyle: input.interiorArtStyle,
           });
           if (!project) {
             throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });

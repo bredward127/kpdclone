@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { BookBriefRecord, PagePlanRecord } from "./db-studio";
+import { isColoringLineArt } from "../shared/coloring-book";
 import { loadFalConfig } from "./fal";
 import { FalProviderError, describeProviderBody } from "./fal-queue";
 
@@ -76,15 +77,16 @@ export async function draftStoryAndPages(
   pages: PagePlanRecord[],
   pageCount: number,
   env: NodeJS.ProcessEnv = process.env,
-  options: { targetPageNumbers?: number[]; fetchImpl?: typeof fetch } = {},
+  options: { targetPageNumbers?: number[]; interiorArtStyle?: string; fetchImpl?: typeof fetch } = {},
 ): Promise<StoryDraft> {
   const endpoint = requiredEnv(env, "FAL_TEXT_ENDPOINT");
   const model = requiredEnv(env, "FAL_TEXT_MODEL");
   const config = loadFalConfig(env);
   if (!config) throw new FalProviderError("FAL is not configured for this deployment.", { classification: "provider_http", retryable: false });
   const safeCount = Math.min(200, Math.max(1, Math.floor(pageCount)));
+  const coloringPage = isColoringLineArt(options.interiorArtStyle);
   const context = JSON.stringify({
-    brief: brief ? { briefText: brief.briefText, bookType: brief.bookType, audience: brief.audience, visualStyleAnchors: brief.visualStyleAnchors, characterBible: brief.characterBible, negativePrompt: brief.negativePrompt } : null,
+    brief: brief ? { briefText: brief.briefText, bookType: brief.bookType, audience: brief.audience, visualStyleAnchors: brief.visualStyleAnchors, characterBible: brief.characterBible, propAndSettingBible: brief.propAndSettingBible, negativePrompt: brief.negativePrompt } : null,
     existingPages: pages.map((page) => ({ pageNumber: page.pageNumber, pageText: page.pageText, sceneDirection: page.sceneDirection })),
   });
   /**
@@ -93,9 +95,17 @@ export async function draftStoryAndPages(
    * had already reviewed and edited.
    */
   const targets = (options.targetPageNumbers ?? []).filter((value) => Number.isInteger(value) && value > 0);
+  /**
+   * A coloring page is drawn to be coloured in, so its scene direction has to
+   * describe shapes and layout rather than colour, light or mood, and has to
+   * keep recurring objects identical between pages.
+   */
+  const styleGuidance = coloringPage
+    ? ` This is a COLORING BOOK: every sceneDirection must describe a scene that works as black-and-white line art to be coloured in. Describe subjects, poses, arrangement and large open shapes. Do not mention colour, lighting, shadow, mood lighting, texture or painting technique. Favour a small number of large, clearly separated objects over crowded detail. Whenever a page shows an object or place that appears on another page, describe it with exactly the same words you used before so it can be drawn identically.`
+    : ` Whenever a page shows an object or place that appears on another page, describe it with exactly the same words you used before so it can be drawn identically.`;
   const prompt = targets.length
-    ? `An existing children's book plan is being extended. Rewrite ONLY page${targets.length === 1 ? "" : "s"} ${targets.join(", ")}. Return JSON only with this shape: {"storySummary":"...","pages":[{"pageNumber":1,"pageText":"...","sceneDirection":"..."}]}, whose "pages" array contains ONLY the rewritten page${targets.length === 1 ? "" : "s"} ${targets.join(", ")} and nothing else. Keep "storySummary" identical to the saved summary. The new page must fit the established characters, tone and continuity of the surrounding pages without contradicting or restating them. Do not request copyrighted characters, trademarks, living artists' styles, or unsafe content. Saved project context: ${context}`
-    : `Create a complete original children's book plan with exactly ${safeCount} ordered pages. Return JSON only with this shape: {"storySummary":"...","pages":[{"pageNumber":1,"pageText":"...","sceneDirection":"..."}]}. Each page needs concise pageText and a specific visual sceneDirection. Preserve any non-empty existing page entries. Do not request copyrighted characters, trademarks, living artists' styles, or unsafe content. Saved project context: ${context}`;
+    ? `An existing children's book plan is being extended. Rewrite ONLY page${targets.length === 1 ? "" : "s"} ${targets.join(", ")}. Return JSON only with this shape: {"storySummary":"...","pages":[{"pageNumber":1,"pageText":"...","sceneDirection":"..."}]}, whose "pages" array contains ONLY the rewritten page${targets.length === 1 ? "" : "s"} ${targets.join(", ")} and nothing else. Keep "storySummary" identical to the saved summary. The new page must fit the established characters, tone and continuity of the surrounding pages without contradicting or restating them. Do not request copyrighted characters, trademarks, living artists' styles, or unsafe content. Saved project context: ${context}${styleGuidance}`
+    : `Create a complete original children's book plan with exactly ${safeCount} ordered pages. Return JSON only with this shape: {"storySummary":"...","pages":[{"pageNumber":1,"pageText":"...","sceneDirection":"..."}]}. Each page needs concise pageText and a specific visual sceneDirection. Preserve any non-empty existing page entries. Do not request copyrighted characters, trademarks, living artists' styles, or unsafe content.${styleGuidance} Saved project context: ${context}`;
 
   /**
    * The OpenAI-compatible chat-completions endpoint answers synchronously: the

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { AppDatabase } from "./db";
 import { getProjectForUser } from "./db";
 import { getBriefForProject, getPagePlanForUser } from "./db-studio";
+import { COLORING_CONFLICT_PATTERN, COLORING_PAGE_RULES, coloringPageNegativePrompt, isColoringLineArt } from "../shared/coloring-book";
 import { listReferenceAssets, assertReferenceCanBeUsedForGeneration, type ReferenceAssetRecord } from "./reference-assets";
 
 export type PromptLintSeverity = "warning" | "blocking";
@@ -13,7 +14,9 @@ export type PromptLintCode =
   | "copyright_or_trademark_request"
   | "living_artist_style_request"
   | "sexual_or_minor_content"
-  | "conflicting_print_constraints";
+  | "conflicting_print_constraints"
+  | "coloring_style_conflict"
+  | "missing_prop_continuity";
 
 export type PromptLintWarning = {
   code: PromptLintCode;
@@ -62,6 +65,8 @@ export type PromptSourceSnapshot = {
     author: string;
     imprint: string;
     bookType: string;
+    /** Older snapshots predate coloring interiors, so this may be absent. */
+    interiorArtStyle?: string;
     readingDirection: string;
     trimWidthInches: number;
     trimHeightInches: number;
@@ -181,6 +186,20 @@ function lintPrompt(input: {
   if (sexualizingDescriptor) {
     warnings.push({ code: "sexual_or_minor_content", severity: "blocking", message: "Sexualized or sexualizing language is not permitted in a children's book request. Remove it before generating.", evidence: sexualizingDescriptor[0], section: "specific page scene" });
   }
+  const coloringPage = isColoringLineArt(input.project.interiorArtStyle);
+  if (coloringPage) {
+    // Colour and lighting direction carried over from a full-colour brief pulls
+    // the model back toward shaded illustration, which cannot be coloured in.
+    const conflict = `${input.brief?.visualStyleAnchors ?? ""}\n${input.pagePlan?.sceneDirection ?? ""}\n${input.userEdits.promptAddition ?? ""}`.match(COLORING_CONFLICT_PATTERN);
+    if (conflict) {
+      warnings.push({ code: "coloring_style_conflict", severity: "warning", message: "This is a coloring page, but the direction asks for colour, lighting or painted rendering. Remove it so the page comes back as clean line art.", evidence: conflict[0], section: "visual style" });
+    }
+  }
+  if (!clean(input.brief?.propAndSettingBible)) {
+    // The nightstand-and-clock failure: nothing pinned the recurring objects, so
+    // each page invented its own version of them.
+    warnings.push({ code: "missing_prop_continuity", severity: "warning", message: "No recurring props and settings are recorded. Objects and locations that appear on more than one page will be redrawn differently each time. Describe them once in the brief.", evidence: "prop and setting bible is empty", section: "recurring props and settings" });
+  }
   if ((input.project.bleedPreference === "no_bleed" && /full[- ]?bleed|edge[- ]to[- ]edge|bleed off the page/i.test(`${input.prompt}\n${input.userEdits.compositionNotes ?? ""}`)) || (input.project.bleedPreference === "bleed" && /keep all content inside trim|no bleed/i.test(input.userEdits.compositionNotes ?? ""))) {
     warnings.push({ code: "conflicting_print_constraints", severity: "warning", message: "The page direction conflicts with the project bleed preference; resolve the print-safe boundary before generation.", evidence: input.project.bleedPreference, section: "print-safe requirements" });
   }
@@ -205,19 +224,26 @@ export function composePrompt(input: {
   const brief = input.source.bookBrief;
   const page = input.source.pagePlan;
   const references = input.source.approvedReferenceAssets;
+  const coloringPage = isColoringLineArt(project.interiorArtStyle);
   const promptSections = [
-    section("BOOK IDENTITY", [`Title: ${project.title || project.name}`, `Author: ${project.author || "Not supplied"}`, `Imprint: ${project.imprint || "Not supplied"}`, `Book type: ${project.bookType}`]),
+    section("BOOK IDENTITY", [`Title: ${project.title || project.name}`, `Author: ${project.author || "Not supplied"}`, `Imprint: ${project.imprint || "Not supplied"}`, `Book type: ${project.bookType}`, `Interior art style: ${coloringPage ? "coloring page (black line art to be coloured in)" : "full colour illustration"}`]),
     section("INTENDED AUDIENCE", [`Audience: ${brief?.audience || "Not supplied"}`, `Reading direction: ${project.readingDirection}`]),
+    section("RECURRING PROPS AND SETTINGS — REPRODUCE EXACTLY", [
+      `${brief?.propAndSettingBible || "Not supplied. If this page shows an object or location that recurs elsewhere in the book, keep it plain and generic so later pages can match it."}`,
+      `Any object or location named above must appear with the same shape, proportions, materials, colour and placement every time it is drawn, on every page of this book. Do not redesign, restyle or re-colour a recurring item to suit this page's composition. If this page shows such an item, draw the version described above, not a new one.`,
+    ]),
     section("CHARACTER/SETTING CONTINUITY", [`Character bible: ${brief?.characterBible || "Not supplied"}`, `Visual-style anchors carried into continuity: ${brief?.visualStyleAnchors || "Not supplied"}`, `Approved reference assets: ${references.length ? references.map((reference) => `${reference.referenceKind} — ${reference.originalFilename} (${reference.id})`).join("; ") : "None"}`]),
     section("SPECIFIC PAGE SCENE", [`Page ${page?.pageNumber ?? "?"}: ${page?.sceneDirection || "Not supplied"}`, `Page text: ${page?.pageText || "No text supplied"}`]),
-    section("VISUAL STYLE", [`${brief?.visualStyleAnchors || "Describe palette, line quality, lighting, texture, and rendering method."}`, `The visual treatment must remain original and consistent with the saved character bible.`]),
+    coloringPage
+      ? section("COLORING PAGE LINE ART — BINDING", [...COLORING_PAGE_RULES, `Line-quality anchors carried from the brief: ${brief?.visualStyleAnchors || "Not supplied"}. Apply these to line and shape only; ignore any colour, lighting or painting direction they contain.`])
+      : section("VISUAL STYLE", [`${brief?.visualStyleAnchors || "Describe palette, line quality, lighting, texture, and rendering method."}`, `The visual treatment must remain original and consistent with the saved character bible.`]),
     section("COMPOSITION", [`Spread/page number: ${page?.pageNumber ?? "?"}`, `Composition notes: ${userEdits.compositionNotes || "Keep the focal subject clear with readable silhouette and intentional negative space for the page layout."}`, `Reading direction: ${project.readingDirection}`]),
     section("PRINT-SAFE REQUIREMENTS", [`Trim: ${project.trimWidthInches} × ${project.trimHeightInches} inches`, `Bleed preference: ${project.bleedPreference}`, `Paper: ${project.paperSelection}; ink: ${project.inkSelection}`, `Keep critical characters and details inside the safe area; avoid accidental text, borders, or watermarks.`]),
-    section("NEGATIVE CONSTRAINTS", [`${brief?.negativePrompt || "No muddy anatomy, extra limbs, accidental text, logos, watermarks, or cropped focal subjects."}`, userEdits.negativePromptAddition]),
+    section("NEGATIVE CONSTRAINTS", [`${brief?.negativePrompt || "No muddy anatomy, extra limbs, accidental text, logos, watermarks, or cropped focal subjects."}`, coloringPage ? coloringPageNegativePrompt() : "", userEdits.negativePromptAddition]),
     section("MODEL-SPECIFIC PARAMETERS", [`Model: ${input.generationModel}`, `Endpoint: ${input.generationEndpoint}`, `Aspect ratio: ${input.aspectRatio}`, `Seed: ${input.seed ?? "provider default"}`]),
   ];
   const prompt = [...promptSections, userEdits.promptAddition ? section("USER EDITS — VERBATIM", [userEdits.promptAddition]) : ""].filter(Boolean).join("\n\n");
-  const negativePrompt = [clean(brief?.negativePrompt), userEdits.negativePromptAddition].filter(Boolean).join("\n");
+  const negativePrompt = [clean(brief?.negativePrompt), coloringPage ? coloringPageNegativePrompt() : "", userEdits.negativePromptAddition].filter(Boolean).join("\n");
   const lintWarnings = lintPrompt({ project, brief, pagePlan: page, userEdits, requestedReferenceAssetIds: input.source.requestedReferenceAssetIds, approvedReferenceAssetIds: references.map((reference) => reference.id), prompt, negativePrompt });
   const resultWithoutHash = { prompt, negativePrompt, sourceFieldSnapshot: input.source, userEdits, generationModel: input.generationModel, generationEndpoint: input.generationEndpoint, aspectRatio: input.aspectRatio, seed: input.seed ?? null, referenceAssetIds: references.map((reference) => reference.id), lintWarnings };
   return { ...resultWithoutHash, contentHashSha256: hashPrompt(resultWithoutHash) };
@@ -279,7 +305,7 @@ export function createPromptVersion(db: AppDatabase, userId: string, composed: C
 }
 
 export function composePromptFromSavedProject(db: AppDatabase, userId: string, input: PromptCompositionInput): ComposedPrompt {
-  const projectRow = db.prepare(`SELECT id, name, brief, title, author, imprint, book_type AS bookType, reading_direction AS readingDirection, trim_width_inches AS trimWidthInches, trim_height_inches AS trimHeightInches, bleed_preference AS bleedPreference, paper_selection AS paperSelection, ink_selection AS inkSelection, page_count AS pageCount FROM book_projects WHERE id = ? AND user_id = ?`).get(input.projectId, userId) as PromptSourceSnapshot["bookProject"] | undefined;
+  const projectRow = db.prepare(`SELECT id, name, brief, title, author, imprint, book_type AS bookType, interior_art_style AS interiorArtStyle, reading_direction AS readingDirection, trim_width_inches AS trimWidthInches, trim_height_inches AS trimHeightInches, bleed_preference AS bleedPreference, paper_selection AS paperSelection, ink_selection AS inkSelection, page_count AS pageCount FROM book_projects WHERE id = ? AND user_id = ?`).get(input.projectId, userId) as PromptSourceSnapshot["bookProject"] | undefined;
   if (!projectRow) throw new Error("Project not found.");
   const brief = getBriefForProject(db, userId, input.projectId);
   const pagePlan = getPagePlanForUser(db, userId, input.pagePlanId);

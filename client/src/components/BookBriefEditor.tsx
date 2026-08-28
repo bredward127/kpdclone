@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Info, Save } from "lucide-react";
+import { CheckCircle2, Info, PenLine, Save } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 
 const fields = [
@@ -8,24 +8,48 @@ const fields = [
   ["audience", "Intended reader", "Enter the reader's age range, reading level, interests, and any accessibility considerations.", "Ages 4–8; read-aloud friendly; short sentences."],
   ["visualStyleAnchors", "Visual style anchors", "Describe the look that should stay consistent on every page: line quality, color, lighting, texture, composition, and mood.", "Warm watercolor, rounded shapes, soft daylight, uncluttered backgrounds, gentle expressions."],
   ["characterBible", "Character bible", "Describe each recurring character so the same character can be recreated consistently. Include colors, clothing, proportions, personality, and important distinguishing features.", "Milo is a small orange kitten with a blue collar, white paws, and a curious but cautious personality."],
+  ["propAndSettingBible", "Recurring props & settings", "Describe every object and location that appears on more than one page: shape, size, material, color, and where it sits. This text is repeated into every page prompt, so anything pinned here is drawn the same way each time. Leave it blank and each page will invent its own version.", "The nightstand is a short two-drawer pine box with round wooden knobs. On it sits a round brass alarm clock with two bells on top and black hands."],
   ["negativePrompt", "Things to avoid", "List constraints that should never appear, such as logos, readable text inside art, extra limbs, unsafe content, or visual styles you do not want.", "No logos, no readable text in illustrations, no extra characters, no scary faces, no imitation of a living artist."],
 ] as const;
 
 type FormState = Record<(typeof fields)[number][0], string>;
-const emptyForm: FormState = { briefText: "", bookType: "Children's picture book", audience: "", visualStyleAnchors: "", characterBible: "", negativePrompt: "" };
+const emptyForm: FormState = { briefText: "", bookType: "Children's picture book", audience: "", visualStyleAnchors: "", characterBible: "", propAndSettingBible: "", negativePrompt: "" };
 
 function Help({ text }: { text: string }) { return <span className="group relative inline-flex align-middle"><button type="button" aria-label={`Field information: ${text}`} title={text} className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-[#9aaab3] text-[#52636c] hover:bg-[#e6eef1] focus-visible:bg-[#e6eef1]"><Info size={12} /></button><span role="tooltip" className="pointer-events-none absolute bottom-full left-0 z-20 mb-2 hidden w-64 rounded-xl bg-[#20384e] p-3 text-left text-xs font-normal leading-5 text-white shadow-xl group-hover:block group-focus-within:block">{text}</span></span>; }
 
 export default function BookBriefEditor({ projectId }: { projectId: string }) {
   const brief = trpc.studio.brief.get.useQuery({ projectId });
+  const project = trpc.project.get.useQuery({ projectId });
+  const updateProject = trpc.project.update.useMutation();
+  const utils = trpc.useUtils();
+  const coloringBook = project.data?.interiorArtStyle === "coloring_line_art";
+  const setInteriorArtStyle = (style: "full_color" | "coloring_line_art") => {
+    updateProject.mutate({ projectId, interiorArtStyle: style }, {
+      onSuccess: async () => { await Promise.all([utils.project.get.invalidate({ projectId }), project.refetch()]); setNotice(style === "coloring_line_art" ? "Interior set to coloring pages. Every page prompt now asks for black line art to be coloured in." : "Interior set to full colour illustration."); },
+      onError: (error) => setNotice(error.message),
+    });
+  };
   const save = trpc.studio.brief.save.useMutation();
   const [form, setForm] = useState<FormState>(emptyForm);
   const [dirty, setDirty] = useState(false);
   const [notice, setNotice] = useState("");
-  useEffect(() => { if (brief.data) { setForm({ briefText: brief.data.briefText, bookType: brief.data.bookType, audience: brief.data.audience, visualStyleAnchors: brief.data.visualStyleAnchors, characterBible: brief.data.characterBible, negativePrompt: brief.data.negativePrompt }); setDirty(false); } }, [brief.data]);
+  useEffect(() => { if (brief.data) { setForm({ briefText: brief.data.briefText, bookType: brief.data.bookType, audience: brief.data.audience, visualStyleAnchors: brief.data.visualStyleAnchors, characterBible: brief.data.characterBible, propAndSettingBible: brief.data.propAndSettingBible ?? "", negativePrompt: brief.data.negativePrompt }); setDirty(false); } }, [brief.data]);
   const update = (key: keyof FormState, value: string) => { setForm((current) => ({ ...current, [key]: value })); setDirty(true); setNotice(""); };
   const saveDraft = () => { setNotice(""); save.mutate({ projectId, ...form }, { onSuccess: (result) => { setDirty(false); setNotice(`Draft version ${result.version} saved securely at ${new Date(result.updatedAt).toLocaleTimeString()}.`); }, onError: (error) => setNotice(error.message) }); };
   if (brief.isLoading) return <p className="rounded-2xl bg-[#fbfaf5] p-6 text-sm text-[var(--muted-ink)]">Loading your saved brief…</p>;
   if (brief.isError) return <p className="rounded-2xl bg-[#fff0eb] p-6 text-sm text-[#7f433a]">Your brief could not be loaded. Refresh before entering more work.</p>;
-  return <section className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5 shadow-[0_8px_30px_rgba(24,43,58,.06)] md:p-7"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="mono text-[10px] uppercase tracking-[0.22em] text-[var(--coral)]">Book memory</p><h2 className="serif mt-2 text-3xl text-[var(--ink)]">Save the decisions once.</h2><p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted-ink)]">This brief becomes the creative memory inherited by your blueprint, page prompts, cover, and validation. Save a draft before leaving the page; each save creates a recoverable server version.</p></div><span className="rounded-full bg-[#e9f2ed] px-3 py-1.5 text-xs font-semibold text-[#356b63]">{dirty ? "Unsaved changes" : brief.data ? `Saved version ${brief.data.version}` : "New brief"}</span></div><div className="mt-7 grid gap-5 md:grid-cols-2">{fields.map(([key, label, help, placeholder]) => <label key={key} className={`${key === "briefText" || key === "visualStyleAnchors" || key === "characterBible" || key === "negativePrompt" ? "md:col-span-2" : ""} block text-sm font-semibold text-[var(--ink)]`}><span className="inline-flex items-center">{label}<Help text={help} /></span>{key === "bookType" || key === "audience" ? <input value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2" /> : <textarea value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2 min-h-28" rows={key === "briefText" ? 5 : 4} />}</label>)}</div><div className="mt-6 flex flex-wrap items-center gap-3"><button type="button" onClick={saveDraft} disabled={save.isPending || !dirty} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"><Save size={16} />{save.isPending ? "Saving draft…" : "Save draft"}</button>{!dirty && brief.data ? <span className="inline-flex items-center gap-2 text-sm text-[#356b63]"><CheckCircle2 size={16} />Saved on the server</span> : <span className="text-xs text-[var(--muted-ink)]">Your changes are not durable until you save.</span>}{notice ? <p className="w-full text-sm text-[#356b63]" role="status">{notice}</p> : null}</div></section>;
+  return <section className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5 shadow-[0_8px_30px_rgba(24,43,58,.06)] md:p-7"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="mono text-[10px] uppercase tracking-[0.22em] text-[var(--coral)]">Book memory</p><h2 className="serif mt-2 text-3xl text-[var(--ink)]">Save the decisions once.</h2><p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted-ink)]">This brief becomes the creative memory inherited by your blueprint, page prompts, cover, and validation. Save a draft before leaving the page; each save creates a recoverable server version.</p></div><span className="rounded-full bg-[#e9f2ed] px-3 py-1.5 text-xs font-semibold text-[#356b63]">{dirty ? "Unsaved changes" : brief.data ? `Saved version ${brief.data.version}` : "New brief"}</span></div><fieldset className="mt-7 rounded-2xl border border-[var(--line)] bg-[#fbfaf5] p-4">
+      <legend className="mono px-2 text-[10px] uppercase tracking-[0.16em] text-[var(--muted-ink)]">Interior art style</legend>
+      <div className="grid gap-3 md:grid-cols-2">
+        {([["full_color", "Full colour illustration", "Finished, coloured artwork on every interior page."], ["coloring_line_art", "Coloring book pages", "Black line art with enclosed shapes and open white interiors, made to be coloured in."]] as const).map(([value, label, description]) => (
+          <label key={value} className={`flex cursor-pointer gap-3 rounded-xl border p-3 ${(value === "coloring_line_art") === coloringBook ? "border-[var(--navy)] bg-[var(--paper-strong)]" : "border-[var(--line)] bg-transparent"}`}>
+            <input type="radio" name="interiorArtStyle" checked={(value === "coloring_line_art") === coloringBook} onChange={() => setInteriorArtStyle(value)} disabled={updateProject.isPending || project.isLoading} className="mt-1 h-4 w-4 accent-[#203348]" />
+            <span className="min-w-0">
+              <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--ink)]">{value === "coloring_line_art" ? <PenLine size={14} /> : null}{label}</span>
+              <span className="mt-1 block text-xs leading-5 text-[var(--muted-ink)]">{description}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </fieldset><div className="mt-5 grid gap-5 md:grid-cols-2">{fields.map(([key, label, help, placeholder]) => <label key={key} className={`${key === "briefText" || key === "visualStyleAnchors" || key === "characterBible" || key === "propAndSettingBible" || key === "negativePrompt" ? "md:col-span-2" : ""} block text-sm font-semibold text-[var(--ink)]`}><span className="inline-flex items-center">{label}<Help text={help} /></span>{key === "bookType" || key === "audience" ? <input value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2" /> : <textarea value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2 min-h-28" rows={key === "briefText" ? 5 : 4} />}</label>)}</div><div className="mt-6 flex flex-wrap items-center gap-3"><button type="button" onClick={saveDraft} disabled={save.isPending || !dirty} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"><Save size={16} />{save.isPending ? "Saving draft…" : "Save draft"}</button>{!dirty && brief.data ? <span className="inline-flex items-center gap-2 text-sm text-[#356b63]"><CheckCircle2 size={16} />Saved on the server</span> : <span className="text-xs text-[var(--muted-ink)]">Your changes are not durable until you save.</span>}{notice ? <p className="w-full text-sm text-[#356b63]" role="status">{notice}</p> : null}</div></section>;
 }
