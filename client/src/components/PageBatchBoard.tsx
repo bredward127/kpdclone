@@ -59,16 +59,21 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
     try {
       for (const row of eligible) {
         setBusy(`Submitting page ${row.pageNumber} (${done + 1} of ${eligible.length})…`);
+        const frozen = row.approvedPromptVersion!;
         await submit.mutateAsync({
           projectId,
           pagePlanId: row.pagePlanId,
-          promptVersionId: row.approvedPromptVersion!.id,
-          generationModel: activeModel.displayName,
-          generationEndpoint: activeModel.endpointId,
-          aspectRatio: "1:1",
-          referenceAssetIds: row.approvedPromptVersion!.referenceAssetIds,
+          promptVersionId: frozen.id,
+          // These four must equal the frozen version's own values; the server
+          // rejects a submission whose parameters differ from the prompt it
+          // claims to run.
+          generationModel: frozen.generationModel,
+          generationEndpoint: frozen.generationEndpoint,
+          aspectRatio: frozen.aspectRatio,
+          seed: frozen.seed ?? undefined,
+          referenceAssetIds: frozen.referenceAssetIds,
           expectedOutputConstraints: { mimeTypes: ["image/png", "image/jpeg", "image/webp"], maxPixels: 25_000_000 },
-          idempotencyKey: `board-${row.pagePlanId}-${row.approvedPromptVersion!.id}`,
+          idempotencyKey: `board-${row.pagePlanId}-${frozen.id}`,
           requestKind: "initial",
         });
         done += 1;

@@ -255,7 +255,10 @@ export function createAppRouter(
               pageText: page.pageText,
               promptVersionCount: versions.length,
               latestPromptVersion: latest ? { id: latest.id, version: latest.version, status: latest.status, blockingLintCount: latest.lintWarnings.filter((warning) => warning.severity === "blocking").length } : null,
-              approvedPromptVersion: approved ? { id: approved.id, version: approved.version, referenceAssetIds: approved.referenceAssetIds } : null,
+              // The submit path requires the model, endpoint, aspect ratio and seed
+              // to match the frozen prompt exactly, so the board sends the
+              // version's own parameters rather than a page-level guess.
+              approvedPromptVersion: approved ? { id: approved.id, version: approved.version, referenceAssetIds: approved.referenceAssetIds, generationModel: approved.generationModel, generationEndpoint: approved.generationEndpoint, aspectRatio: approved.aspectRatio, seed: approved.seed } : null,
               latestAsset: assets[0] ? { id: assets[0].id, status: assets[0].status } : null,
               activeJob: jobs.find((job) => ["queued", "in_progress", "cancellation_requested"].includes(job.localStatus)) ? true : false,
             };
@@ -305,7 +308,7 @@ export function createAppRouter(
         }),
         submit: protectedProcedure.input(z.object({
           projectId: z.string().min(1), pagePlanId: z.string().min(1), promptVersionId: z.string().min(1),
-          generationModel: z.string().min(1).max(200), generationEndpoint: z.string().min(1).max(300), aspectRatio: z.string().regex(/^\\d+:\\d+$/), seed: z.number().int().optional(), referenceAssetIds: z.array(z.string().min(1)).max(24), expectedOutputConstraints: z.record(z.string(), z.unknown()).default({}), idempotencyKey: z.string().min(8).max(200).optional(), requestKind: z.enum(["initial", "variation", "prompt_edit"]).default("initial"), sourceAssetId: z.string().min(1).optional(),
+          generationModel: z.string().min(1).max(200), generationEndpoint: z.string().min(1).max(300), aspectRatio: z.string().regex(/^\d+:\d+$/), seed: z.number().int().optional(), referenceAssetIds: z.array(z.string().min(1)).max(24), expectedOutputConstraints: z.record(z.string(), z.unknown()).default({}), idempotencyKey: z.string().min(8).max(200).optional(), requestKind: z.enum(["initial", "variation", "prompt_edit"]).default("initial"), sourceAssetId: z.string().min(1).optional(),
         })).mutation(async ({ ctx, input }) => {
           if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
           enforceLimit(submitLimiter, ctx.user.id, "generation");
@@ -329,7 +332,7 @@ export function createAppRouter(
         }),
         queueNext: protectedProcedure.input(z.object({
           projectId: z.string().min(1), count: z.union([z.literal(2), z.literal(3)]), confirmed: z.literal(true),
-          requests: z.array(z.object({ pagePlanId: z.string().min(1), promptVersionId: z.string().min(1), generationModel: z.string().min(1).max(200), generationEndpoint: z.string().min(1).max(300), aspectRatio: z.string().regex(/^\\d+:\\d+$/), seed: z.number().int().optional(), referenceAssetIds: z.array(z.string().min(1)).max(24), expectedOutputConstraints: z.record(z.string(), z.unknown()).default({}), idempotencyKey: z.string().min(8).max(200) })).min(2).max(3),
+          requests: z.array(z.object({ pagePlanId: z.string().min(1), promptVersionId: z.string().min(1), generationModel: z.string().min(1).max(200), generationEndpoint: z.string().min(1).max(300), aspectRatio: z.string().regex(/^\d+:\d+$/), seed: z.number().int().optional(), referenceAssetIds: z.array(z.string().min(1)).max(24), expectedOutputConstraints: z.record(z.string(), z.unknown()).default({}), idempotencyKey: z.string().min(8).max(200) })).min(2).max(3),
         })).mutation(async ({ ctx, input }) => {
           if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
           enforceLimit(submitLimiter, ctx.user.id, "generation queue");
