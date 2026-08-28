@@ -10,6 +10,7 @@ import { lifecycleStatuses, pageApprovalStates } from "../shared/studio";
 import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
 import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset } from "./reference-assets";
 import { getReferenceValidationLimits } from "./reference-validation";
+import { draftStoryAndPages } from "./story-drafting";
 import { composePromptFromSavedProject, createPromptVersion, freezePromptVersion, getPromptVersionForUser, listPromptVersions, restorePromptVersion } from "./prompt-composer";
 import { createFalGenerationService, type FalGenerationService } from "./fal-generation";
 import { getFalQueueClient } from "./fal-queue";
@@ -151,6 +152,15 @@ export function createAppRouter(
           const brief = createBookBrief(db, ctx.user.id, { id: crypto.randomUUID(), ...input });
           recordWorkflowEvent(ctx.user.id, input.projectId, "book_brief", brief.id, "brief_changed", JSON.stringify({ version: brief.version }));
           return brief;
+        }),
+        draftWithAi: protectedProcedure.input(projectIdInput.extend({ pageCount: z.number().int().positive().max(200) })).mutation(async ({ ctx, input }) => {
+          enforceLimit(policyLimiter, ctx.user.id, "AI planning");
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          try {
+            return await draftStoryAndPages(getBriefForProject(db, ctx.user.id, input.projectId), listPagePlans(db, ctx.user.id, input.projectId), input.pageCount);
+          } catch (error) {
+            throw new TRPCError({ code: "PRECONDITION_FAILED", message: error instanceof Error ? error.message : "AI-assisted planning is not configured." });
+          }
         }),
       }),
       prompts: router({

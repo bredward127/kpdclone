@@ -52,6 +52,7 @@ export function getFalModel(endpointId: string): FalModelConfig | null {
   return falModelRegistry.find((model) => model.endpointId === endpointId) ?? null;
 }
 
-export function listSelectableFalModels(): FalModelConfig[] {
-  return falModelRegistry.filter((model) => model.active && model.requiresAdminApproval === true && Boolean(model.docsReviewedAt));
+export function listSelectableFalModels(env: NodeJS.ProcessEnv = process.env): FalModelConfig[] {
+  const explicitlyActivated = new Set((env.FAL_ACTIVE_ENDPOINTS ?? "").split(",").map((value) => value.trim()).filter(Boolean));
+  return falModelRegistry.filter((model) => (model.active || explicitlyActivated.has(model.endpointId)) && model.requiresAdminApproval === true && Boolean(model.docsReviewedAt));
 }
