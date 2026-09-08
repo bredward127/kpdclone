@@ -25,6 +25,8 @@ import { computeFrozenProjectVersion, createFinalExport, type FinalExportInput }
 import { addProvenanceEntry, assertPublishingReadyForExport, classifyContentPolicy, createPublishingMetadataVersion, finalizePublishingMetadataVersion, listProvenance, recordContentPolicyReview, type PublishingMetadataInput, type ProvenanceInput } from "./publishing";
 import { createProject, deleteProjectDataForUser, getProjectForUser, listProjects, updateProjectForUser, upsertUser, type AppDatabase, type UserRecord } from "./db";
 import { createRateLimiter } from "./security";
+import { getTextLayout, saveTextLayout } from "./text-layout-store";
+import { FONT_CHOICES, recommendLayout } from "../shared/text-layout";
 import { cleanupExpiredObjects, getOperationsDashboard, getRecoveryCandidates, reconcileOneJob, recordOperationalRecovery, retryOneStorageCopy, regenerateOneExport } from "./operations";
 
 export type AppContext = {
@@ -184,6 +186,85 @@ export function createAppRouter(
           } catch (error) {
             throw new TRPCError({ code: "PRECONDITION_FAILED", message: error instanceof Error ? error.message : "AI-assisted planning is not configured." });
           }
+        }),
+      }),
+      /**
+       * Typesetting for text composited over finished artwork at export. The
+       * preview reads the same catalogue and geometry the PDF writer uses, so
+       * what an author approves page by page is what prints.
+       */
+      textLayout: router({
+        fonts: protectedProcedure.query(() => FONT_CHOICES),
+        get: protectedProcedure.input(projectIdInput).query(({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          return getTextLayout(db, ctx.user.id, input.projectId);
+        }),
+        save: protectedProcedure.input(projectIdInput.extend({
+          fontId: z.string().min(1).max(60),
+          fontSize: z.number().min(6).max(96),
+          lineHeight: z.number().min(0.8).max(3),
+          align: z.enum(["left", "center", "right"]),
+          placement: z.enum(["below_image", "above_image", "overlay_bottom", "overlay_top"]),
+          colorHex: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+          marginInches: z.number().min(0).max(3),
+          textBandInches: z.number().min(0.2).max(11),
+          showPageNumbers: z.boolean(),
+          pageOverrides: z.record(z.string(), z.object({
+            fontId: z.string().min(1).max(60).optional(),
+            fontSize: z.number().min(6).max(96).optional(),
+            align: z.enum(["left", "center", "right"]).optional(),
+            placement: z.enum(["below_image", "above_image", "overlay_bottom", "overlay_top"]).optional(),
+            colorHex: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+          })).default({}),
+        })).mutation(({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          if (!FONT_CHOICES.some((choice) => choice.id === input.fontId)) throw new TRPCError({ code: "BAD_REQUEST", message: "Unknown font." });
+          const { projectId, ...layout } = input;
+          return saveTextLayout(db, ctx.user.id, projectId, layout);
+        }),
+        recommend: protectedProcedure.input(projectIdInput).query(({ ctx, input }) => {
+          const project = getProjectForUser(db, ctx.user.id, input.projectId);
+          if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          const brief = getBriefForProject(db, ctx.user.id, input.projectId);
+          const pages = listPagePlans(db, ctx.user.id, input.projectId);
+          return recommendLayout({
+            trimWidthInches: project.trimWidthInches,
+            trimHeightInches: project.trimHeightInches,
+            audience: brief?.audience ?? null,
+            coloringBook: project.interiorArtStyle === "coloring_line_art",
+            longestPageTextLength: pages.reduce((longest, page) => Math.max(longest, page.pageText.length), 0),
+          });
+        }),
+        /**
+         * One entry per page in reading order with the text, a signed image URL
+         * and the resolved layout, so the mock-up can be paged through without
+         * a request per page.
+         */
+        preview: protectedProcedure.input(projectIdInput).query(async ({ ctx, input }) => {
+          const project = getProjectForUser(db, ctx.user.id, input.projectId);
+          if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          const stored = getTextLayout(db, ctx.user.id, input.projectId);
+          const pages = listPagePlans(db, ctx.user.id, input.projectId);
+          const entries = await Promise.all(pages.map(async (page) => {
+            const assets = listGeneratedAssetsForPage(db, ctx.user.id, input.projectId, page.id);
+            const approved = assets.find((asset) => asset.status === "approved") ?? assets[0] ?? null;
+            return {
+              pagePlanId: page.id,
+              pageNumber: page.pageNumber,
+              pageText: page.pageText,
+              sceneDirection: page.sceneDirection,
+              imageUrl: approved ? await storage.createAccessUrl(approved.storageReference, 3_600) : null,
+              imageStatus: approved?.status ?? null,
+              override: stored.pageOverrides[page.id] ?? null,
+            };
+          }));
+          return {
+            layout: stored,
+            trim: { widthInches: project.trimWidthInches, heightInches: project.trimHeightInches },
+            readingDirection: project.readingDirection,
+            coloringBook: project.interiorArtStyle === "coloring_line_art",
+            pages: entries,
+          };
         }),
       }),
       prompts: router({

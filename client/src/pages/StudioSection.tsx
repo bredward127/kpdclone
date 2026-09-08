@@ -14,14 +14,16 @@ import BookBriefEditor from "@/components/BookBriefEditor";
 import BlueprintPlanner from "@/components/BlueprintPlanner";
 import PageBatchBoard from "@/components/PageBatchBoard";
 import ContinuityHeader from "@/components/ContinuityHeader";
+import BookPreview from "@/components/BookPreview";
 
 const sectionCopy = {
   "book-brief": { eyebrow: "Step 01 / Story", title: "Tell me about your book.", description: "Describe your story, characters, setting, and art style. Use the AI button to fill everything in from a single sentence — then edit to make it yours.", icon: FileText, next: "blueprint", nextLabel: "Set up pages →" },
   blueprint: { eyebrow: "Step 02 / Pages", title: "Plan your pages.", description: "Choose how many pages your book has and write a short scene description and story text for each one. The AI can draft the whole page list from your story summary.", icon: Layers3, next: "page-studio", nextLabel: "Start creating →" },
   "page-studio": { eyebrow: "Step 03 / Create", title: "Generate your artwork.", description: "Generate images for each page. You can do them one at a time or queue up several at once. Review each image and approve the ones you like before moving on.", icon: Image, next: "cover-desk", nextLabel: "Design your cover →" },
-  "cover-desk": { eyebrow: "Step 04 / Cover", title: "Design your cover.", description: "Build your front cover, back cover, and spine. Upload your artwork and place your title and author name within the KDP safe zones.", icon: Ruler, next: "exports", nextLabel: "Export your book →" },
+  "cover-desk": { eyebrow: "Step 04 / Cover", title: "Design your cover.", description: "Build your front cover, back cover, and spine. Upload your artwork and place your title and author name within the KDP safe zones.", icon: Ruler, next: "exports", nextLabel: "Preview your book →" },
   validation: { eyebrow: "Preflight check", title: "Final check.", description: "Run a preflight pass to make sure all pages are approved, dimensions are correct, and the package is ready to export.", icon: ShieldCheck, next: "exports", nextLabel: "Export →" },
-  exports: { eyebrow: "Step 05 / Export", title: "Export your book.", description: "Package your approved interior pages and cover into print-ready files for Amazon KDP. Each export is a private, versioned snapshot.", icon: CheckCircle2, next: "book-brief", nextLabel: "← Back to story" },
+  preview: { eyebrow: "Step 05 / Preview", title: "See the finished book.", description: "Page through your book exactly as it will print, with your story text typeset over the artwork. Choose the font, size and position — for the whole book or one page — before you export.", icon: FileText, next: "exports", nextLabel: "Export your book →" },
+  exports: { eyebrow: "Step 06 / Export", title: "Export your book.", description: "Package your approved interior pages and cover into print-ready files for Amazon KDP. Each export is a private, versioned snapshot.", icon: CheckCircle2, next: "book-brief", nextLabel: "← Back to story" },
 } as const;
 
 type SectionKey = keyof typeof sectionCopy;
@@ -108,6 +110,14 @@ export default function StudioSection({ projectId, section }: { projectId: strin
     return (
       <SectionShell>
         <ValidationDesk projectId={projectId} />
+      </SectionShell>
+    );
+  }
+
+  if (section === "preview") {
+    return (
+      <SectionShell>
+        <BookPreview projectId={projectId} />
       </SectionShell>
     );
   }

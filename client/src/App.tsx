@@ -6,8 +6,8 @@ import StudioSection from "@/pages/StudioSection";
 import { OperationsDashboard } from "@/components/OperationsDashboard";
 import { ErrorState } from "@/components/States";
 
-type SectionKey = "book-brief" | "blueprint" | "page-studio" | "cover-desk" | "validation" | "exports";
-const sections = new Set<SectionKey>(["book-brief", "blueprint", "page-studio", "cover-desk", "validation", "exports"]);
+type SectionKey = "book-brief" | "blueprint" | "page-studio" | "cover-desk" | "validation" | "preview" | "exports";
+const sections = new Set<SectionKey>(["book-brief", "blueprint", "page-studio", "cover-desk", "validation", "preview", "exports"]);
 
 function RootRedirect() {
   const [, setLocation] = useLocation();

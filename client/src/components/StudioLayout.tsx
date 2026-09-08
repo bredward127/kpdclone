@@ -8,7 +8,8 @@ const steps = [
   { label: "Pages", suffix: "blueprint", step: "02" },
   { label: "Create", suffix: "page-studio", step: "03" },
   { label: "Cover", suffix: "cover-desk", step: "04" },
-  { label: "Export", suffix: "exports", step: "05" },
+  { label: "Preview", suffix: "preview", step: "05" },
+  { label: "Export", suffix: "exports", step: "06" },
 ];
 
 export function StudioLayout({ children, projectId }: { children: React.ReactNode; projectId?: string }) {

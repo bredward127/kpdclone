@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fontkit from "@pdf-lib/fontkit";
 import { PDFDocument, rgb, StandardFonts, type PDFFont, type PDFImage, type PDFPage } from "pdf-lib";
+import { FONT_CHOICES } from "../shared/text-layout";
 import type { AppDatabase, ProjectRecord } from "./db";
 import { getProjectForUser } from "./db";
 import { readPrivateStorageBytes, type PrivateStorage } from "./storage";
@@ -21,7 +22,7 @@ const POINTS_PER_INCH = 72;
 
 export type InteriorPageType = "front_matter" | "dedication" | "copyright" | "storybook_text_spread" | "coloring_page" | "activity_page" | "intentional_blank" | "end_matter";
 export type ReadingDirection = "ltr" | "rtl";
-export type TextBlock = { id: string; text: string; x: number; y: number; width: number; height: number; fontSize: number; fontId?: string; align?: "left" | "center" | "right" };
+export type TextBlock = { id: string; text: string; x: number; y: number; width: number; height: number; fontSize: number; fontId?: string; align?: "left" | "center" | "right"; colorHex?: string; lineHeight?: number };
 export type ImagePlacement = { x: number; y: number; width: number; height: number; fit?: "contain" | "cover" };
 export type InteriorPageInput = { id: string; pageNumber: number; pageType: InteriorPageType; assetId?: string; assetVersion?: string; assetChecksumSha256?: string; assetStatus?: "approved" | "needs_review" | "rejected" | "missing"; assetBytes?: Uint8Array; assetMimeType?: "image/png" | "image/jpeg"; assetQualityBlockingIssues?: number; textBlocks?: TextBlock[]; imagePlacement?: ImagePlacement; intentionallyBlank?: boolean; layoutId?: string };
 export type InteriorFont = { id: string; family: string; bytes: Uint8Array; permitted: boolean };
@@ -99,7 +100,48 @@ export function preflightInterior(input: InteriorBuildInput): InteriorPreflightR
 
 function imagePlacementFor(page: InteriorPageInput, input: InteriorBuildInput): ImagePlacement { return page.imagePlacement ?? { x: 0, y: 0, width: input.trimWidthInches, height: input.trimHeightInches, fit: "cover" }; }
 function drawImageFit(target: PDFPage, image: PDFImage, placement: ImagePlacement): void { const box = { x: inches(placement.x), y: inches(placement.y), width: inches(placement.width), height: inches(placement.height) }; target.drawImage(image, box); }
-function drawText(target: PDFPage, font: PDFFont, block: TextBlock): void { const color = rgb(0.08, 0.11, 0.14); const lines = block.text.split("\n"); const lineHeight = block.fontSize * 1.25; lines.forEach((line, index) => { let x = inches(block.x); if (block.align === "center") x += inches(block.width) / 2 - font.widthOfTextAtSize(line, block.fontSize) / 2; if (block.align === "right") x += inches(block.width) - font.widthOfTextAtSize(line, block.fontSize); target.drawText(line, { x, y: inches(block.y + block.height) - inches(0.02) - lineHeight * (index + 1), size: block.fontSize, font, color, maxWidth: inches(block.width) }); }); }
+function hexToRgb(hex?: string): { r: number; g: number; b: number } {
+  const match = /^#?([0-9a-f]{6})$/i.exec(hex ?? "");
+  if (!match) return { r: 0.08, g: 0.11, b: 0.14 };
+  const value = parseInt(match[1], 16);
+  return { r: ((value >> 16) & 255) / 255, g: ((value >> 8) & 255) / 255, b: (value & 255) / 255 };
+}
+
+/**
+ * Wrap on word boundaries using the embedded font's own metrics, so a line
+ * break in the export lands where the preview showed it. pdf-lib's `maxWidth`
+ * does not wrap `drawText`, so long page text used to run past the trim edge
+ * and off the page.
+ */
+function wrapToWidth(font: PDFFont, text: string, fontSize: number, maxWidthPoints: number): string[] {
+  const lines: string[] = [];
+  for (const paragraph of text.split("\n")) {
+    const words = paragraph.split(/\s+/).filter(Boolean);
+    if (!words.length) { lines.push(""); continue; }
+    let current = words[0];
+    for (const word of words.slice(1)) {
+      const candidate = `${current} ${word}`;
+      if (font.widthOfTextAtSize(candidate, fontSize) <= maxWidthPoints) current = candidate;
+      else { lines.push(current); current = word; }
+    }
+    lines.push(current);
+  }
+  return lines;
+}
+
+function drawText(target: PDFPage, font: PDFFont, block: TextBlock): void {
+  const { r, g, b } = hexToRgb(block.colorHex);
+  const color = rgb(r, g, b);
+  const maxWidth = inches(block.width);
+  const lineHeight = block.fontSize * (block.lineHeight ?? 1.25);
+  const lines = wrapToWidth(font, block.text, block.fontSize, maxWidth);
+  lines.forEach((line, index) => {
+    let x = inches(block.x);
+    if (block.align === "center") x += maxWidth / 2 - font.widthOfTextAtSize(line, block.fontSize) / 2;
+    if (block.align === "right") x += maxWidth - font.widthOfTextAtSize(line, block.fontSize);
+    target.drawText(line, { x, y: inches(block.y + block.height) - inches(0.02) - lineHeight * (index + 1), size: block.fontSize, font, color });
+  });
+}
 
 export async function assembleInteriorPdf(input: InteriorBuildInput, preview = false): Promise<{ pdfBytes: Uint8Array; manifest: LayoutManifest; preflight: InteriorPreflightReport; manifestBytes: Uint8Array; preflightBytes: Uint8Array }> {
   const normalizedPages = [...input.pages].sort((a, b) => a.pageNumber - b.pageNumber);
@@ -116,7 +158,17 @@ export async function assembleInteriorPdf(input: InteriorBuildInput, preview = f
   pdf.registerFontkit(fontkit);
   const fontMap = new Map<string, PDFFont>();
   for (const font of input.fonts) { if (!font.permitted) continue; fontMap.set(font.id, await pdf.embedFont(font.bytes, { subset: false })); }
-  if (!fontMap.size && finalPages.some((page) => page.textBlocks?.length)) fontMap.set("standard", await pdf.embedFont(StandardFonts.Helvetica));
+  /**
+   * Resolve any font the catalogue offers, not just Helvetica. Every choice is
+   * one of the PDF standard 14, so nothing has to be embedded or licensed, and
+   * the preview's CSS stack was picked to match each one's metrics.
+   */
+  for (const choice of FONT_CHOICES) {
+    if (fontMap.has(choice.id)) continue;
+    const standard = (StandardFonts as Record<string, StandardFonts>)[choice.standardFont];
+    if (standard) fontMap.set(choice.id, await pdf.embedFont(standard));
+  }
+  if (!fontMap.has("standard")) fontMap.set("standard", await pdf.embedFont(StandardFonts.Helvetica));
   for (const page of finalPages) {
     const target = pdf.addPage([inches(physical.width), inches(physical.height)]);
     if (preview) target.drawText("PREVIEW — NOT FOR UPLOAD", { x: inches(0.2), y: inches(physical.height - 0.18), size: 8, font: fontMap.get("standard") ?? await pdf.embedFont(StandardFonts.Helvetica), color: rgb(0.65, 0.16, 0.1) });
