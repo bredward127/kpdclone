@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDatabase, createProject, upsertUser } from "../server/db";
 import { createAppRouter } from "../server/routers";
-import { assertReferenceCanBeUsedForGeneration, deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, uploadReferenceAsset } from "../server/reference-assets";
+import { assertReferenceCanBeUsedForGeneration, deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, updateReferenceLabel, uploadReferenceAsset } from "../server/reference-assets";
 import { validateReferenceImage } from "../server/reference-validation";
 import type { PrivateStorage } from "../server/storage";
 
@@ -116,5 +116,102 @@ describe("visual-reference security", () => {
     expect(getReferenceAssetForUser(db, stranger.id, record.id)).toBeNull();
     expect(() => assertReferenceCanBeUsedForGeneration(db, owner.id, record.id)).toThrow("unavailable");
     await expect(deleteReferenceAssetForUser(db, storage, owner.id, record.id)).resolves.toBeNull();
+  });
+});
+
+describe("reference labels: what a picture depicts and how to use it", () => {
+  it("saves and returns the label and usage notes on upload", async () => {
+    const { storage } = makeStorage();
+    const { db, project } = makeFixture(storage);
+    const record = await uploadReferenceAsset(db, storage, owner.id, {
+      projectId: project.id,
+      referenceKind: "character_sheet",
+      originalFilename: "car.png",
+      label: "Danny's car — a red 1967 Mustang convertible",
+      usageNotes: "Use whenever the car appears; match colour and shape exactly.",
+      declaredMimeType: "image/png",
+      provenanceDeclaration: "user_owned",
+      rightsAttestation: true,
+      bytes: pngBytes,
+    }, { maxBytes: 100_000, maxPixels: 1_000_000, maxDimension: 2_000 });
+    expect(record.label).toBe("Danny's car — a red 1967 Mustang convertible");
+    expect(record.usageNotes).toBe("Use whenever the car appears; match colour and shape exactly.");
+    // A fresh read must see the same values, not just the just-created record.
+    const reloaded = getReferenceAssetForUser(db, owner.id, record.id);
+    expect(reloaded?.label).toBe(record.label);
+    expect(reloaded?.usageNotes).toBe(record.usageNotes);
+  });
+
+  it("defaults to empty strings when no label or usage notes are given", async () => {
+    const { storage } = makeStorage();
+    const { db, project } = makeFixture(storage);
+    const record = await uploadReferenceAsset(db, storage, owner.id, {
+      projectId: project.id,
+      referenceKind: "moodboard",
+      originalFilename: "mood.png",
+      declaredMimeType: "image/png",
+      provenanceDeclaration: "user_owned",
+      rightsAttestation: true,
+      bytes: pngBytes,
+    }, { maxBytes: 100_000, maxPixels: 1_000_000, maxDimension: 2_000 });
+    expect(record.label).toBe("");
+    expect(record.usageNotes).toBe("");
+  });
+
+  it("trims and length-caps a label and usage notes rather than rejecting them", async () => {
+    const { storage } = makeStorage();
+    const { db, project } = makeFixture(storage);
+    const record = await uploadReferenceAsset(db, storage, owner.id, {
+      projectId: project.id,
+      referenceKind: "character_sheet",
+      originalFilename: "car.png",
+      label: `  ${"x".repeat(250)}  `,
+      usageNotes: `  ${"y".repeat(600)}  `,
+      declaredMimeType: "image/png",
+      provenanceDeclaration: "user_owned",
+      rightsAttestation: true,
+      bytes: pngBytes,
+    }, { maxBytes: 100_000, maxPixels: 1_000_000, maxDimension: 2_000 });
+    expect(record.label).toHaveLength(200);
+    expect(record.label.startsWith(" ")).toBe(false);
+    expect(record.usageNotes).toHaveLength(500);
+  });
+
+  it("edits the label and usage notes without touching the stored image", async () => {
+    const { storage } = makeStorage();
+    const { db, project } = makeFixture(storage);
+    const record = await uploadReferenceAsset(db, storage, owner.id, {
+      projectId: project.id,
+      referenceKind: "character_sheet",
+      originalFilename: "car.png",
+      label: "First description",
+      declaredMimeType: "image/png",
+      provenanceDeclaration: "user_owned",
+      rightsAttestation: true,
+      bytes: pngBytes,
+    }, { maxBytes: 100_000, maxPixels: 1_000_000, maxDimension: 2_000 });
+
+    const updated = updateReferenceLabel(db, owner.id, record.id, { label: "The red Mustang", usageNotes: "Use in every driving scene." });
+    expect(updated.label).toBe("The red Mustang");
+    expect(updated.usageNotes).toBe("Use in every driving scene.");
+    expect(updated.storageKey).toBe(record.storageKey);
+    expect(storage.put).toHaveBeenCalledOnce();
+  });
+
+  it("refuses to edit a reference the caller does not own or that is gone", async () => {
+    const { storage } = makeStorage();
+    const { db, project } = makeFixture(storage);
+    const record = await uploadReferenceAsset(db, storage, owner.id, {
+      projectId: project.id,
+      referenceKind: "character_sheet",
+      originalFilename: "car.png",
+      declaredMimeType: "image/png",
+      provenanceDeclaration: "user_owned",
+      rightsAttestation: true,
+      bytes: pngBytes,
+    }, { maxBytes: 100_000, maxPixels: 1_000_000, maxDimension: 2_000 });
+    expect(() => updateReferenceLabel(db, stranger.id, record.id, { label: "hijacked" })).toThrow(/unavailable/);
+    await deleteReferenceAssetForUser(db, storage, owner.id, record.id);
+    expect(() => updateReferenceLabel(db, owner.id, record.id, { label: "too late" })).toThrow(/unavailable/);
   });
 });

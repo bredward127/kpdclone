@@ -92,7 +92,32 @@ export default function PromptStudio({ projectId, focusPagePlanId = "" }: { proj
 
         <div className="mt-6 grid gap-4 md:grid-cols-3"><label className="block"><span className="mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted-ink)]">New prompt direction</span><textarea value={promptAddition} onChange={(event) => setPromptAddition(event.target.value)} rows={4} placeholder="Only what is unique to this page…" className="mt-2 w-full resize-y rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-3 text-sm leading-5 text-[var(--ink)]" /></label><label className="block"><span className="mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted-ink)]">Composition notes</span><textarea value={compositionNotes} onChange={(event) => setCompositionNotes(event.target.value)} rows={4} placeholder="Focal point, negative space, spread balance…" className="mt-2 w-full resize-y rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-3 text-sm leading-5 text-[var(--ink)]" /></label><label className="block"><span className="mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted-ink)]">Additional negative constraints</span><textarea value={negativePromptAddition} onChange={(event) => setNegativePromptAddition(event.target.value)} rows={4} placeholder="Specific things to avoid on this page…" className="mt-2 w-full resize-y rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-3 text-sm leading-5 text-[var(--ink)]" /></label></div>
 
-        <div className="mt-6 rounded-2xl border border-[var(--line)] bg-[#fbfaf5] p-4"><div className="flex items-center justify-between gap-3"><div><p className="mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted-ink)]">Approved visual references</p><p className="mt-1 text-xs text-[var(--muted-ink)]">Only active references with a rights attestation can be sent as generation inputs.</p></div><span className="rounded-full bg-[#e9f2ed] px-3 py-1 text-xs font-semibold text-[#517b68]">{selectedReferenceIds.length} selected</span></div>{referenceData.length ? <div className="mt-3 grid gap-2 md:grid-cols-2">{referenceData.map((reference) => <label key={reference.id} className="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3"><input type="checkbox" checked={selectedReferenceIds.includes(reference.id)} onChange={() => toggleReference(reference.id)} className="h-4 w-4 accent-[#203348]" /><img src={reference.accessUrl} alt="" className="h-10 w-10 rounded-lg bg-[#ece8dd] object-cover" /><span className="min-w-0"><span className="block truncate text-xs font-semibold text-[var(--ink)]">{reference.originalFilename}</span><span className="block text-[10px] text-[#517b68]">Rights attested · {reference.referenceKind.replaceAll("_", " ")}</span></span></label>)}</div> : <p className="mt-3 text-sm text-[var(--muted-ink)]">No references have been added to this project.</p>}</div>
+        <div className="mt-6 rounded-2xl border border-[var(--line)] bg-[#fbfaf5] p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted-ink)]">Approved visual references</p>
+              <p className="mt-1 text-xs text-[var(--muted-ink)]">Pick which references apply to this page. A recurring prop or character (e.g. a specific car) only needs to be ticked on the pages it actually appears in.</p>
+            </div>
+            <span className="rounded-full bg-[#e9f2ed] px-3 py-1 text-xs font-semibold text-[#517b68]">{selectedReferenceIds.length} selected</span>
+          </div>
+          {referenceData.length ? (
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              {referenceData.map((reference) => (
+                <label key={reference.id} className="flex cursor-pointer items-start gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3">
+                  <input type="checkbox" checked={selectedReferenceIds.includes(reference.id)} onChange={() => toggleReference(reference.id)} className="mt-1 h-4 w-4 shrink-0 accent-[#203348]" />
+                  <img src={reference.accessUrl} alt="" className="h-10 w-10 shrink-0 rounded-lg bg-[#ece8dd] object-cover" />
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs font-semibold text-[var(--ink)]">{reference.label || reference.originalFilename}</span>
+                    <span className="block text-[10px] text-[#517b68]">Rights attested · {reference.referenceKind.replaceAll("_", " ")}</span>
+                    {reference.usageNotes && <span className="mt-0.5 block text-[10px] leading-4 text-[var(--muted-ink)]">{reference.usageNotes}</span>}
+                  </span>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-[var(--muted-ink)]">No references have been added to this project.</p>
+          )}
+        </div>
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <button type="button" disabled={compose.isPending} onClick={submit} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-5 py-3 text-sm font-semibold text-white hover:bg-[#2d465f] disabled:cursor-not-allowed disabled:opacity-45"><WandSparkles size={16} />{compose.isPending ? "Composing…" : "Compose & save version"}</button>
           <button type="button" disabled={!latestVersion || Boolean(approvedVersion) || freeze.isPending} onClick={() => latestVersion && freeze.mutate({ projectId, promptVersionId: latestVersion.id })} title={approvedVersion ? "This page already has a frozen, approved version." : "Freezing approves this version so the page can be generated."} className="inline-flex items-center gap-2 rounded-full border border-[var(--navy)] px-5 py-3 text-sm font-semibold text-[var(--navy)] hover:bg-[#eef3f7] disabled:cursor-not-allowed disabled:opacity-45"><Lock size={16} />{freeze.isPending ? "Freezing…" : approvedVersion ? "Frozen & approved" : "Freeze & approve for generation"}</button>

@@ -3,6 +3,8 @@ import { createDatabase, createProject, upsertUser } from "../server/db";
 import { createBookBrief, createPagePlan } from "../server/db-studio";
 import { composePrompt, composePromptFromSavedProject, createPromptVersion, getPromptVersionForUser, listPromptVersions, restorePromptVersion, stableSerialize } from "../server/prompt-composer";
 import { createAppRouter } from "../server/routers";
+import { uploadReferenceAsset } from "../server/reference-assets";
+import type { PrivateStorage } from "../server/storage";
 
 const owner = { id: "prompt-owner", name: "Prompt Owner", email: "owner@example.com" };
 const stranger = { id: "prompt-stranger", name: "Prompt Stranger", email: "stranger@example.com" };
@@ -107,5 +109,97 @@ describe("immutable prompt versions", () => {
     await expect(strangerCaller.studio.prompts.list({ projectId: project.id, pagePlanId: page.id })).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(strangerCaller.studio.prompts.restore({ projectId: project.id, promptVersionId: saved.id })).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(ownerCaller.studio.prompts.restore({ projectId: project.id, promptVersionId: saved.id })).resolves.toMatchObject({ restoredFromPromptVersionId: saved.id, version: 2 });
+  });
+});
+
+describe("a reference's label and usage notes reach the model", () => {
+  const pngBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+  function makeStorage(): PrivateStorage {
+    return { put: async (key) => ({ key }), delete: async () => undefined, createAccessUrl: async (key) => `/private/${key}` };
+  }
+
+  it("names what the reference depicts and how to use it, not just its filename and category", async () => {
+    const { db, project, page } = makeFixture();
+    const storage = makeStorage();
+    const reference = await uploadReferenceAsset(db, storage, owner.id, {
+      projectId: project.id,
+      referenceKind: "character_sheet",
+      originalFilename: "IMG_4231.png",
+      label: "Danny's car — a red 1967 Mustang convertible",
+      usageNotes: "Use whenever the car appears; match colour and shape exactly.",
+      declaredMimeType: "image/png",
+      provenanceDeclaration: "user_owned",
+      rightsAttestation: true,
+      bytes: pngBytes,
+    }, { maxBytes: 100_000, maxPixels: 1_000_000, maxDimension: 2_000 });
+
+    const composed = composePromptFromSavedProject(db, owner.id, {
+      projectId: project.id, pagePlanId: page.id,
+      generationModel: "M", generationEndpoint: "e/m", aspectRatio: "1:1",
+      referenceAssetIds: [reference.id],
+    });
+
+    expect(composed.prompt).toContain("Reference image 1: Danny's car — a red 1967 Mustang convertible");
+    expect(composed.prompt).toContain("Use whenever the car appears; match colour and shape exactly.");
+    // The old format leaked only category and filename to the model, which
+    // could not identify a specific recurring prop.
+    expect(composed.prompt).not.toMatch(/character_sheet — IMG_4231\.png/);
+  });
+
+  it("falls back to category and filename when no label was given, and offers a default usage instruction", async () => {
+    const { db, project, page } = makeFixture();
+    const storage = makeStorage();
+    const reference = await uploadReferenceAsset(db, storage, owner.id, {
+      projectId: project.id,
+      referenceKind: "moodboard",
+      originalFilename: "mood.png",
+      declaredMimeType: "image/png",
+      provenanceDeclaration: "user_owned",
+      rightsAttestation: true,
+      bytes: pngBytes,
+    }, { maxBytes: 100_000, maxPixels: 1_000_000, maxDimension: 2_000 });
+
+    const composed = composePromptFromSavedProject(db, owner.id, {
+      projectId: project.id, pagePlanId: page.id,
+      generationModel: "M", generationEndpoint: "e/m", aspectRatio: "1:1",
+      referenceAssetIds: [reference.id],
+    });
+
+    expect(composed.prompt).toContain("Reference image 1: moodboard (mood.png)");
+    expect(composed.prompt).toContain("Use for general visual continuity");
+  });
+
+  it("numbers multiple references in the same order they are attached, matching image_urls order", async () => {
+    const { db, project, page } = makeFixture();
+    const storage = makeStorage();
+    const car = await uploadReferenceAsset(db, storage, owner.id, {
+      projectId: project.id, referenceKind: "character_sheet", originalFilename: "car.png",
+      label: "The red car", declaredMimeType: "image/png", provenanceDeclaration: "user_owned",
+      rightsAttestation: true, bytes: pngBytes,
+    }, { maxBytes: 100_000, maxPixels: 1_000_000, maxDimension: 2_000 });
+    const toy = await uploadReferenceAsset(db, storage, owner.id, {
+      projectId: project.id, referenceKind: "character_sheet", originalFilename: "toy.png",
+      label: "Mina's stuffed rabbit", declaredMimeType: "image/png", provenanceDeclaration: "user_owned",
+      rightsAttestation: true, bytes: pngBytes,
+    }, { maxBytes: 100_000, maxPixels: 1_000_000, maxDimension: 2_000 });
+
+    const composed = composePromptFromSavedProject(db, owner.id, {
+      projectId: project.id, pagePlanId: page.id,
+      generationModel: "M", generationEndpoint: "e/m", aspectRatio: "1:1",
+      referenceAssetIds: [car.id, toy.id],
+    });
+    expect(composed.prompt).toContain("Reference image 1: The red car");
+    expect(composed.prompt).toContain("Reference image 2: Mina's stuffed rabbit");
+    expect(composed.referenceAssetIds).toEqual([car.id, toy.id]);
+  });
+
+  it("says plainly when no reference is attached to a page", () => {
+    const { db, project, page } = makeFixture();
+    const composed = composePromptFromSavedProject(db, owner.id, {
+      projectId: project.id, pagePlanId: page.id,
+      generationModel: "M", generationEndpoint: "e/m", aspectRatio: "1:1",
+      referenceAssetIds: [],
+    });
+    expect(composed.prompt).toContain("No reference images are attached to this page.");
   });
 });

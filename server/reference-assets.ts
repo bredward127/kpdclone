@@ -19,6 +19,10 @@ export type ReferenceAssetRecord = {
   pagePlanId: string | null;
   referenceKind: ReferenceKind;
   originalFilename: string;
+  /** What the picture depicts, e.g. "Danny's car — red 1967 Mustang convertible". */
+  label: string;
+  /** How and where it should be used, e.g. "Use in every scene with the car." */
+  usageNotes: string;
   mimeType: string;
   widthPx: number;
   heightPx: number;
@@ -42,6 +46,7 @@ export function getReferenceAssetForUser(db: AppDatabase, userId: string, refere
     db.prepare(
       `SELECT id, user_id AS userId, project_id AS projectId, page_plan_id AS pagePlanId,
               reference_kind AS referenceKind, original_filename AS originalFilename,
+              label, usage_notes AS usageNotes,
               mime_type AS mimeType, width_px AS widthPx, height_px AS heightPx,
               byte_size AS byteSize, storage_key AS storageKey,
               content_hash_sha256 AS contentHashSha256,
@@ -59,6 +64,7 @@ export function getReferenceAssetByStorageKeyForUser(db: AppDatabase, userId: st
     db.prepare(
       `SELECT id, user_id AS userId, project_id AS projectId, page_plan_id AS pagePlanId,
               reference_kind AS referenceKind, original_filename AS originalFilename,
+              label, usage_notes AS usageNotes,
               mime_type AS mimeType, width_px AS widthPx, height_px AS heightPx,
               byte_size AS byteSize, storage_key AS storageKey,
               content_hash_sha256 AS contentHashSha256,
@@ -75,6 +81,7 @@ export function listReferenceAssets(db: AppDatabase, userId: string, projectId: 
   return db.prepare(
     `SELECT id, user_id AS userId, project_id AS projectId, page_plan_id AS pagePlanId,
             reference_kind AS referenceKind, original_filename AS originalFilename,
+            label, usage_notes AS usageNotes,
             mime_type AS mimeType, width_px AS widthPx, height_px AS heightPx,
             byte_size AS byteSize, storage_key AS storageKey,
             content_hash_sha256 AS contentHashSha256,
@@ -92,6 +99,32 @@ export function assertReferenceCanBeUsedForGeneration(db: AppDatabase, userId: s
   if (!reference || reference.status !== "active") throw new Error("Visual reference is unavailable.");
   if (!reference.rightsAttestation) throw new Error("Rights attestation is required before using this visual reference for generation.");
   return reference;
+}
+
+/**
+ * Edit what a reference depicts and how it should be used without
+ * re-uploading the image. Wording is usually refined after seeing how a
+ * generation turned out, and the picture itself rarely needs to change then.
+ */
+export function updateReferenceLabel(
+  db: AppDatabase,
+  userId: string,
+  referenceId: string,
+  input: { label?: string; usageNotes?: string },
+): ReferenceAssetRecord {
+  const existing = getReferenceAssetForUser(db, userId, referenceId);
+  if (!existing || existing.status !== "active") throw new Error("Visual reference is unavailable.");
+  db.prepare(
+    `UPDATE reference_assets SET label = @label, usage_notes = @usageNotes, updated_at = @now
+     WHERE id = @referenceId AND user_id = @userId AND status = 'active'`,
+  ).run({
+    label: (input.label ?? existing.label).trim().slice(0, 200),
+    usageNotes: (input.usageNotes ?? existing.usageNotes).trim().slice(0, 500),
+    now: new Date().toISOString(),
+    referenceId,
+    userId,
+  });
+  return getReferenceAssetForUser(db, userId, referenceId)!;
 }
 
 export async function deleteReferenceAssetForUser(
@@ -132,6 +165,8 @@ export async function uploadReferenceAsset(
     pagePlanId?: string;
     referenceKind: ReferenceKind;
     originalFilename: string;
+    label?: string;
+    usageNotes?: string;
     declaredMimeType: string;
     provenanceDeclaration: ProvenanceDeclaration;
     rightsAttestation: boolean;
@@ -170,11 +205,11 @@ export async function uploadReferenceAsset(
       }
       db.prepare(
         `INSERT INTO reference_assets
-          (id, user_id, project_id, page_plan_id, reference_kind, original_filename,
+          (id, user_id, project_id, page_plan_id, reference_kind, original_filename, label, usage_notes,
            mime_type, width_px, height_px, byte_size, storage_key, content_hash_sha256,
            provenance_declaration, rights_attestation, rights_attested_at,
            status, replaces_id, created_at, updated_at)
-         VALUES (@id, @userId, @projectId, @pagePlanId, @referenceKind, @originalFilename,
+         VALUES (@id, @userId, @projectId, @pagePlanId, @referenceKind, @originalFilename, @label, @usageNotes,
                  @mimeType, @widthPx, @heightPx, @byteSize, @storageKey, @contentHashSha256,
                  @provenanceDeclaration, 1, @now, 'active', @replacesId, @now, @now)`,
       ).run({
@@ -184,6 +219,8 @@ export async function uploadReferenceAsset(
         pagePlanId: input.pagePlanId ?? null,
         referenceKind: input.referenceKind,
         originalFilename: cleanFilename(input.originalFilename),
+        label: (input.label ?? "").trim().slice(0, 200),
+        usageNotes: (input.usageNotes ?? "").trim().slice(0, 500),
         ...validated,
         storageKey,
         provenanceDeclaration: input.provenanceDeclaration,

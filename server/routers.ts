@@ -8,7 +8,7 @@ import { getFalConnectionStatus, type FalConnectionStatus } from "./fal";
 import { createBookBrief, createPagePlan, updatePagePlan, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, getGeneratedAssetForUser, getGenerationJobForUser, insertGenerationJob, listAssetVariantsForUser, listAuditEvents, listExportPackages, listGeneratedAssetsForPage, listGenerationJobsForUser, listPagePlans, reviewGeneratedAsset, transitionAssetStatus, transitionGenerationJob, updatePageApproval, deletePagePlan, saveBriefGeneration, listBriefGenerations, listActiveJobIdsForProject } from "./db-studio";
 import { lifecycleStatuses, pageApprovalStates } from "../shared/studio";
 import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
-import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset } from "./reference-assets";
+import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset, updateReferenceLabel } from "./reference-assets";
 import { getReferenceValidationLimits } from "./reference-validation";
 import { draftBookBrief, draftCoverCopy, draftStoryAndPages } from "./story-drafting";
 import { composePromptFromSavedProject, createPromptVersion, freezePromptVersion, getPromptVersionForUser, listPromptVersions, restorePromptVersion, NO_TEXT_RULE_MARKER } from "./prompt-composer";
@@ -743,6 +743,13 @@ export function createAppRouter(
         pagePlanId: z.string().min(1).optional(),
         referenceKind: z.enum(referenceKinds),
         originalFilename: z.string().trim().min(1).max(255),
+        // What the picture depicts and how it should be used -- e.g. "Danny's
+        // car: a red 1967 Mustang convertible" / "Use whenever the car
+        // appears." Without this, a reference carried only a category and a
+        // filename, so a specific recurring prop or character could not be
+        // identified in the prompt the model actually sees.
+        label: z.string().trim().max(200).default(""),
+        usageNotes: z.string().trim().max(500).default(""),
         declaredMimeType: z.enum(["image/png", "image/jpeg", "image/webp"]),
         provenanceDeclaration: z.enum(provenanceDeclarations),
         rightsAttestation: z.literal(true),
@@ -791,6 +798,19 @@ export function createAppRouter(
           return { ok: true };
         } catch {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "The visual reference could not be deleted safely." });
+        }
+      }),
+      update: protectedProcedure.input(z.object({
+        referenceId: z.string().min(1),
+        label: z.string().trim().max(200).optional(),
+        usageNotes: z.string().trim().max(500).optional(),
+      })).mutation(({ ctx, input }) => {
+        try {
+          const updated = updateReferenceLabel(db, ctx.user.id, input.referenceId, input);
+          const { storageKey: _storageKey, ...safeReference } = updated;
+          return safeReference;
+        } catch (error) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "This reference could not be updated." });
         }
       }),
       canUseForGeneration: protectedProcedure.input(z.object({ referenceId: z.string().min(1) })).query(({ ctx, input }) => {

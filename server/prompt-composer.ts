@@ -79,7 +79,7 @@ export type PromptSourceSnapshot = {
   };
   bookBrief: ReturnType<typeof getBriefForProject>;
   pagePlan: ReturnType<typeof getPagePlanForUser>;
-  approvedReferenceAssets: ReadonlyArray<Pick<ReferenceAssetRecord, "id" | "referenceKind" | "originalFilename" | "widthPx" | "heightPx" | "contentHashSha256" | "provenanceDeclaration">>;
+  approvedReferenceAssets: ReadonlyArray<Pick<ReferenceAssetRecord, "id" | "referenceKind" | "originalFilename" | "label" | "usageNotes" | "widthPx" | "heightPx" | "contentHashSha256" | "provenanceDeclaration">>;
   requestedReferenceAssetIds: ReadonlyArray<string>;
 };
 
@@ -234,7 +234,27 @@ export function composePrompt(input: {
       `${brief?.propAndSettingBible || "Not supplied. If this page shows an object or location that recurs elsewhere in the book, keep it plain and generic so later pages can match it."}`,
       `Any object or location named above must appear with the same shape, proportions, materials, colour and placement every time it is drawn, on every page of this book. Do not redesign, restyle or re-colour a recurring item to suit this page's composition. If this page shows such an item, draw the version described above, not a new one.`,
     ]),
-    section("CHARACTER/SETTING CONTINUITY", [`Character bible: ${brief?.characterBible || "Not supplied"}`, `Visual-style anchors carried into continuity: ${brief?.visualStyleAnchors || "Not supplied"}`, `Approved reference assets: ${references.length ? references.map((reference) => `${reference.referenceKind} — ${reference.originalFilename} (${reference.id})`).join("; ") : "None"}`]),
+    section("CHARACTER/SETTING CONTINUITY", [
+      `Character bible: ${brief?.characterBible || "Not supplied"}`,
+      `Visual-style anchors carried into continuity: ${brief?.visualStyleAnchors || "Not supplied"}`,
+      /**
+       * Numbered 1..N in the same order the images are attached to the
+       * request, so "Reference image 2" in this text is unambiguous when the
+       * endpoint actually receives the picture alongside this prompt. A
+       * reference used to reach the model as only its category and filename
+       * ("character_sheet — car.png"), with no text saying what it depicted
+       * or how to use it -- a specific recurring prop or character (a
+       * particular car, a particular toy) could not be identified or targeted
+       * to the scenes it belonged in.
+       */
+      ...(references.length
+        ? references.map((reference, index) => {
+            const what = reference.label?.trim() || `${reference.referenceKind.replaceAll("_", " ")} (${reference.originalFilename})`;
+            const how = reference.usageNotes?.trim() || "Use for general visual continuity; match its style, proportions and colours wherever relevant.";
+            return `Reference image ${index + 1}: ${what}. How to use it: ${how}`;
+          })
+        : ["No reference images are attached to this page."]),
+    ]),
     /**
      * The page's story text is deliberately NOT sent to the image model.
      * Passing it as "Page text: ..." made the model render those words into the
@@ -332,13 +352,13 @@ export function composePromptFromSavedProject(db: AppDatabase, userId: string, i
   const pagePlan = getPagePlanForUser(db, userId, input.pagePlanId);
   if (!pagePlan || pagePlan.projectId !== input.projectId) throw new Error("Page plan not found.");
   const activeReferences = listReferenceAssets(db, userId, input.projectId);
-  const approvedReferenceAssets: Array<Pick<ReferenceAssetRecord, "id" | "referenceKind" | "originalFilename" | "widthPx" | "heightPx" | "contentHashSha256" | "provenanceDeclaration">> = [];
+  const approvedReferenceAssets: Array<Pick<ReferenceAssetRecord, "id" | "referenceKind" | "originalFilename" | "label" | "usageNotes" | "widthPx" | "heightPx" | "contentHashSha256" | "provenanceDeclaration">> = [];
   for (const id of input.referenceAssetIds) {
     const reference = activeReferences.find((candidate) => candidate.id === id);
     if (!reference) continue;
     try {
       assertReferenceCanBeUsedForGeneration(db, userId, id);
-      approvedReferenceAssets.push({ id: reference.id, referenceKind: reference.referenceKind, originalFilename: reference.originalFilename, widthPx: reference.widthPx, heightPx: reference.heightPx, contentHashSha256: reference.contentHashSha256, provenanceDeclaration: reference.provenanceDeclaration });
+      approvedReferenceAssets.push({ id: reference.id, referenceKind: reference.referenceKind, originalFilename: reference.originalFilename, label: reference.label, usageNotes: reference.usageNotes, widthPx: reference.widthPx, heightPx: reference.heightPx, contentHashSha256: reference.contentHashSha256, provenanceDeclaration: reference.provenanceDeclaration });
     } catch {
       // Keep the requested ID in the source snapshot; lint explains why it was excluded from generation inputs.
     }
