@@ -29,10 +29,27 @@ describe("per-image cost", () => {
     expect(estimateImageCostUsd(flux.pricing, "high", 24)).toBeCloseTo(0.072, 4);
   });
 
-  it("records real pricing for every registered model", () => {
+  it("records real pricing for every registered model, or says plainly that it does not", () => {
     for (const model of falModelRegistry) {
-      expect(model.pricing.perImageUsd ?? model.pricing.flatPerImageUsd, `${model.endpointId} has no price`).toBeTruthy();
+      const priced = Boolean(model.pricing.perImageUsd ?? model.pricing.flatPerImageUsd);
+      // A price may be deliberately absent when the provider's figure has not
+      // been confirmed -- inventing one is worse than showing "unknown cost" to
+      // someone watching spend. What is not allowed is an unpriced model that
+      // fails to say so, or one that is switched on by default.
+      if (!priced) {
+        expect(model.pricing.note, `${model.endpointId} is unpriced and must explain why`).toMatch(/price/i);
+        expect(model.pricing.display, `${model.endpointId} must not display a price it does not have`).toMatch(/not yet recorded|unknown/i);
+        expect(model.active, `${model.endpointId} is unpriced and must not be active by default`).toBe(false);
+      }
       expect(model.pricing.display).toBeTruthy();
+    }
+  });
+
+  it("returns no cost estimate for an unpriced model rather than a misleading zero", () => {
+    for (const model of falModelRegistry) {
+      if (model.pricing.perImageUsd ?? model.pricing.flatPerImageUsd) continue;
+      expect(estimateImageCostUsd(model.pricing, "low", 33)).toBeNull();
+      expect(formatUsd(estimateImageCostUsd(model.pricing, "low", 33))).toBe("unknown cost");
     }
   });
 

@@ -5,6 +5,7 @@ import { createAuditEvent, getGenerationJobForUser, getGeneratedAssetForUser } f
 import { assertNoBlockingLint, getPromptVersionForUser } from "./prompt-composer";
 import { classifyContentPolicy, recordContentPolicyReview } from "./publishing";
 import { getFalModel, listSelectableFalModels } from "./fal-models";
+import { loadReferenceImages } from "./reference-images";
 import { imageSizeForAspectRatio } from "../shared/image-cost";
 import { validateReferenceImage, getReferenceValidationLimits } from "./reference-validation";
 import { analyzeAssetQuality } from "./asset-quality";
@@ -209,6 +210,86 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
     }
   }
 
+  /**
+   * Build the provider payload for one frozen prompt, resolving reference art
+   * into image data the endpoint can actually read.
+   *
+   * References were previously sent as `reference_asset_ids` -- internal
+   * database ids -- which no provider could resolve. Uploaded character sheets
+   * therefore never influenced a generated page, so continuity between pages
+   * was impossible however carefully the brief was written.
+   *
+   * Shared by submit and retry, so a retry rebuilds the same payload rather
+   * than replaying a stored copy whose image data was redacted.
+   */
+  async function buildModelInputs(
+    db: AppDatabase,
+    userId: string,
+    prompt: NonNullable<ReturnType<typeof getPromptVersionForUser>>,
+    quality: "low" | "medium" | "high",
+  ): Promise<Record<string, unknown>> {
+    const modelConfig = getFalModel(prompt.generationEndpoint);
+    /**
+     * Production cannot reach this: modelApproval already restricts submission
+     * to registry endpoints. It stays reachable for callers that supply their
+     * own approval check, and gets a plain text-to-image payload rather than
+     * one endpoint's fields guessed onto another.
+     */
+    if (!modelConfig) {
+      return {
+        prompt: prompt.prompt,
+        negative_prompt: prompt.negativePrompt,
+        aspect_ratio: prompt.aspectRatio,
+        image_size: imageSizeForAspectRatio(prompt.aspectRatio),
+        num_images: 1,
+        output_format: "png",
+        ...(prompt.seed !== null && prompt.seed !== undefined ? { seed: prompt.seed } : {}),
+      };
+    }
+
+    let referenceImageUris: string[] = [];
+    if (modelConfig.acceptsReferenceImages && prompt.referenceAssetIds.length) {
+      const loaded = await loadReferenceImages(db, userId, prompt.referenceAssetIds);
+      referenceImageUris = loaded.images.map((image) => image.dataUri);
+      if (loaded.skipped.length && !referenceImageUris.length) throw new Error(`No reference image could be used: ${loaded.skipped[0].reason}`);
+    }
+    if (modelConfig.requiresReferenceImage && !referenceImageUris.length) {
+      throw new Error(`${modelConfig.displayName} draws from reference art, so this page needs at least one usable reference image. Upload character art on the Create step, attest rights to it, then freeze this page's prompt again.`);
+    }
+
+    const built = modelConfig.buildInput({
+      prompt: prompt.prompt,
+      negativePrompt: prompt.negativePrompt,
+      aspectRatio: prompt.aspectRatio,
+      seed: prompt.seed,
+      quality,
+      referenceImageUris,
+    });
+
+    // Validate against the endpoint's own schema before spending money: a
+    // malformed payload otherwise fails at the provider after the request has
+    // been accepted, and for some endpoints after it has been billed.
+    const validated = modelConfig.allowedInputSchema.safeParse(built);
+    if (!validated.success) {
+      throw new Error(`The request for ${modelConfig.displayName} did not match its input schema: ${validated.error.issues.slice(0, 2).map((issue) => `${issue.path.join(".") || "(root)"} ${issue.message}`).join("; ")}`);
+    }
+    return built;
+  }
+
+  /**
+   * Inlined reference art is megabytes of base64 per page. Keep it out of the
+   * stored audit copy: those bytes already live in private storage, and a
+   * fifty-page book would otherwise write hundreds of megabytes of duplicated
+   * image data into the job table.
+   */
+  function redactInputsForStorage(modelInputs: Record<string, unknown>): Record<string, unknown> {
+    const stored = { ...modelInputs };
+    if (Array.isArray(stored.image_urls)) {
+      stored.image_urls = stored.image_urls.map((value) => typeof value === "string" && value.startsWith("data:") ? `<inline reference image, ${Math.round(value.length / 1024)}KB>` : value);
+    }
+    return stored;
+  }
+
   async function submit(db: AppDatabase, userId: string, input: { projectId: string; pagePlanId: string; promptVersionId: string; generationModel: string; generationEndpoint: string; aspectRatio: string; seed?: number; referenceAssetIds: string[]; expectedOutputConstraints: Record<string, unknown>; idempotencyKey?: string; requestKind?: "initial" | "variation" | "prompt_edit"; sourceAssetId?: string }): Promise<GenerationJobSummary> {
     if (!getProjectForUser(db, userId, input.projectId)) throw new Error("Project not found.");
     if (input.idempotencyKey) {
@@ -238,25 +319,12 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
     }
     const jobId = crypto.randomUUID();
     const createdAt = now();
-    // quality and image_size were never sent. Without a quality the provider
-    // applied its own default -- the most expensive tier -- so every page was
-    // billed at roughly fifteen times the low-tier price.
     const project = getProjectForUser(db, userId, input.projectId);
-    const modelConfig = getFalModel(input.generationEndpoint);
-    const modelInputs: Record<string, unknown> = {
-      prompt: prompt.prompt,
-      negative_prompt: prompt.negativePrompt,
-      aspect_ratio: prompt.aspectRatio,
-      image_size: imageSizeForAspectRatio(prompt.aspectRatio),
-      seed: prompt.seed,
-      reference_asset_ids: prompt.referenceAssetIds,
-      model: prompt.generationModel,
-    };
-    if (modelConfig?.honoursQualityTier !== false) modelInputs.quality = project?.imageQuality ?? "low";
+    const modelInputs = await buildModelInputs(db, userId, prompt, project?.imageQuality ?? "low");
     db.prepare(`INSERT INTO generation_jobs
       (id, user_id, project_id, page_plan_id, prompt_version_id, generation_model, generation_endpoint,
        seed, status, local_status, model_inputs_json, expected_output_constraints_json, idempotency_key, request_kind, source_asset_id, queued_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'draft', ?, ?, ?, ?, ?, NULL, ?, ?)`).run(jobId, userId, input.projectId, input.pagePlanId, input.promptVersionId, prompt.generationModel, prompt.generationEndpoint, prompt.seed, json(modelInputs), json(input.expectedOutputConstraints), input.idempotencyKey ?? null, input.requestKind ?? "initial", input.sourceAssetId ?? null, createdAt, createdAt);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'draft', ?, ?, ?, ?, ?, NULL, ?, ?)`).run(jobId, userId, input.projectId, input.pagePlanId, input.promptVersionId, prompt.generationModel, prompt.generationEndpoint, prompt.seed, json(redactInputsForStorage(modelInputs)), json(input.expectedOutputConstraints), input.idempotencyKey ?? null, input.requestKind ?? "initial", input.sourceAssetId ?? null, createdAt, createdAt);
     try {
       const submitted = await dependencies.adapter.submit(prompt.generationEndpoint, modelInputs, dependencies.webhookUrl ? { webhookUrl: dependencies.webhookUrl } : undefined);
       const queuedAt = now();
@@ -306,7 +374,12 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
     if (!job || !job.falRequestId) throw new Error("Generation job not found.");
     if (job.localStatus !== "failed") throw new Error("Only failed generation jobs can be retried.");
     if (job.retryCount >= 3) throw new Error("Generation retry limit reached.");
-    const modelInputs = job.modelInputs;
+    // Rebuild rather than replaying the stored payload: its reference image
+    // data was redacted before storage, so a replay would send placeholders.
+    const retryPrompt = job.promptVersionId ? getPromptVersionForUser(db, userId, job.promptVersionId) : null;
+    if (!retryPrompt) throw new Error("The frozen prompt for this job no longer exists, so it cannot be retried.");
+    const retryProject = getProjectForUser(db, userId, job.projectId);
+    const modelInputs = await buildModelInputs(db, userId, retryPrompt, retryProject?.imageQuality ?? "low");
     const submitted = await dependencies.adapter.submit(job.generationEndpoint, modelInputs, dependencies.webhookUrl ? { webhookUrl: dependencies.webhookUrl } : undefined);
     setJob(db, userId, job.id, { fal_request_id: submitted.requestId, provider_job_id: submitted.requestId, local_status: "queued", status: "queued", provider_status: "IN_QUEUE", retry_count: job.retryCount + 1, error_classification: null, error_message: null, queued_at: now(), completed_at: null });
     const updated = getGenerationJobForUser(db, userId, job.id)!;
