@@ -3,6 +3,8 @@ import type { AppDatabase } from "./db";
 import { canTransition } from "../shared/studio";
 import type { LifecycleStatus, PageApprovalState, AiProvenanceClassification } from "../shared/studio";
 
+export type StoryCharacter = { name: string; description: string };
+
 export type BriefGenerationRecord = {
   id: string;
   userId: string;
@@ -14,6 +16,8 @@ export type BriefGenerationRecord = {
   characterBible: string;
   propAndSettingBible: string;
   negativePrompt: string;
+  /** The named characters this generation produced, so recalling it restores the checklist too. */
+  characters: StoryCharacter[];
   createdAt: string;
 };
 
@@ -22,15 +26,16 @@ export function saveBriefGeneration(
   userId: string,
   projectId: string,
   idea: string,
-  draft: { briefText: string; audience: string; visualStyleAnchors: string; characterBible: string; propAndSettingBible: string; negativePrompt: string },
+  draft: { briefText: string; audience: string; visualStyleAnchors: string; characterBible: string; propAndSettingBible: string; negativePrompt: string; characters?: StoryCharacter[] },
 ): BriefGenerationRecord {
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
+  const charactersJson = JSON.stringify((draft.characters ?? []).filter((character) => character.name.trim()));
   db.prepare(
-    `INSERT INTO brief_generations (id, user_id, project_id, idea, brief_text, audience, visual_style_anchors, character_bible, prop_and_setting_bible, negative_prompt, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, userId, projectId, idea, draft.briefText, draft.audience, draft.visualStyleAnchors, draft.characterBible, draft.propAndSettingBible, draft.negativePrompt, createdAt);
-  return { id, userId, projectId, idea, ...draft, createdAt };
+    `INSERT INTO brief_generations (id, user_id, project_id, idea, brief_text, audience, visual_style_anchors, character_bible, prop_and_setting_bible, negative_prompt, characters_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, userId, projectId, idea, draft.briefText, draft.audience, draft.visualStyleAnchors, draft.characterBible, draft.propAndSettingBible, draft.negativePrompt, charactersJson, createdAt);
+  return { id, userId, projectId, idea, ...draft, characters: parseCharacters(charactersJson), createdAt };
 }
 
 export function listBriefGenerations(db: AppDatabase, userId: string, projectId: string, limit = 20): BriefGenerationRecord[] {
@@ -39,15 +44,17 @@ export function listBriefGenerations(db: AppDatabase, userId: string, projectId:
       `SELECT id, user_id AS userId, project_id AS projectId, idea,
               brief_text AS briefText, audience, visual_style_anchors AS visualStyleAnchors,
               character_bible AS characterBible, prop_and_setting_bible AS propAndSettingBible,
-              negative_prompt AS negativePrompt, created_at AS createdAt
+              negative_prompt AS negativePrompt, characters_json AS charactersJson, created_at AS createdAt
        FROM brief_generations
        WHERE user_id = ? AND project_id = ?
        ORDER BY created_at DESC LIMIT ?`,
     )
-    .all(userId, projectId, limit) as BriefGenerationRecord[];
+    .all(userId, projectId, limit)
+    .map((row) => {
+      const { charactersJson, ...rest } = row as Omit<BriefGenerationRecord, "characters"> & { charactersJson: string };
+      return { ...rest, characters: parseCharacters(charactersJson) };
+    });
 }
-
-export type StoryCharacter = { name: string; description: string };
 
 export type BookBriefRecord = {
   id: string;

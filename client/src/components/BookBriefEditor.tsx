@@ -89,8 +89,13 @@ export default function BookBriefEditor({ projectId, onRequestReference }: { pro
       propAndSettingBible: gen.propAndSettingBible,
       negativePrompt: gen.negativePrompt,
     }));
+    // Restore the character checklist with the fields it came from: without
+    // it, recalling a generation left the author with a character bible full
+    // of names and nothing to attach reference art to.
+    setCharacters(gen.characters ?? []);
     setDirty(true);
-    setNotice(`Restored generation from ${new Date(gen.createdAt).toLocaleString()}. Review the fields and save when ready.`);
+    const characterCount = gen.characters?.length ?? 0;
+    setNotice(`Restored generation from ${new Date(gen.createdAt).toLocaleString()}${characterCount ? `, with ${characterCount} character${characterCount === 1 ? "" : "s"}` : ""}. Review the fields and save when ready.`);
   };
 
   const setInteriorArtStyle = (style: "full_color" | "coloring_line_art") => {

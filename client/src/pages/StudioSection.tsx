@@ -27,6 +27,31 @@ const sectionCopy = {
 } as const;
 
 type SectionKey = keyof typeof sectionCopy;
+type SectionCopy = (typeof sectionCopy)[SectionKey];
+
+/**
+ * The heading and frame around whichever step is showing.
+ *
+ * Declared at module level on purpose. Defined inside StudioSection it was a
+ * new component type on every render, so React unmounted the entire step and
+ * remounted it whenever this page's own state changed -- and every step's
+ * unsaved work (an AI-filled brief, its character list, the focused page) went
+ * with it. Pressing "Add reference" on a character was enough to wipe them.
+ */
+function SectionShell({ copy, maxWidth = "max-w-6xl", children }: { copy: SectionCopy; maxWidth?: string; children: React.ReactNode }) {
+  return (
+    <div className={`mx-auto ${maxWidth}`}>
+      <div className="mb-8 flex items-start gap-4">
+        <div>
+          <p className="mono text-[10px] uppercase tracking-[0.24em] text-[var(--coral)]">{copy.eyebrow}</p>
+          <h1 className="serif mt-1 text-4xl leading-tight text-[var(--ink)] md:text-5xl">{copy.title}</h1>
+          <p className="mt-3 max-w-xl text-sm leading-6 text-[var(--muted-ink)]">{copy.description}</p>
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
 
 export default function StudioSection({ projectId, section }: { projectId: string; section: SectionKey }) {
   const project = trpc.project.get.useQuery({ projectId });
@@ -41,24 +66,9 @@ export default function StudioSection({ projectId, section }: { projectId: strin
   if (project.isError) return <ErrorState message="This project is unavailable or does not belong to your account." />;
   if (!project.data) return <ErrorState message="This project could not be found." />;
 
-  function SectionShell({ maxWidth = "max-w-6xl", children }: { maxWidth?: string; children: React.ReactNode }) {
-    return (
-      <div className={`mx-auto ${maxWidth}`}>
-        <div className="mb-8 flex items-start gap-4">
-          <div>
-            <p className="mono text-[10px] uppercase tracking-[0.24em] text-[var(--coral)]">{copy.eyebrow}</p>
-            <h1 className="serif mt-1 text-4xl leading-tight text-[var(--ink)] md:text-5xl">{copy.title}</h1>
-            <p className="mt-3 max-w-xl text-sm leading-6 text-[var(--muted-ink)]">{copy.description}</p>
-          </div>
-        </div>
-        {children}
-      </div>
-    );
-  }
-
   if (section === "book-brief") {
     return (
-      <SectionShell>
+      <SectionShell copy={copy}>
         {/* Reference art belongs above the AI fill button, not after it: the
             character bible and prop bible are inherited verbatim into every
             page prompt, so a reference's label has to exist before "Fill
@@ -78,7 +88,7 @@ export default function StudioSection({ projectId, section }: { projectId: strin
 
   if (section === "blueprint") {
     return (
-      <SectionShell>
+      <SectionShell copy={copy}>
         {/* Reference art has to be uploaded and labelled before scene
             directions are drafted, not after: the AI that writes each page's
             sceneDirection reads a reference's label and usage notes so it can
@@ -94,7 +104,7 @@ export default function StudioSection({ projectId, section }: { projectId: strin
 
   if (section === "page-studio") {
     return (
-      <SectionShell maxWidth="max-w-5xl">
+      <SectionShell copy={copy} maxWidth="max-w-5xl">
         {/* Continuity comes first: references and the story bible decide whether
             every page can be drawn as the same book, so they belong above the
             generate controls rather than buried below them. */}
@@ -123,7 +133,7 @@ export default function StudioSection({ projectId, section }: { projectId: strin
 
   if (section === "cover-desk") {
     return (
-      <SectionShell>
+      <SectionShell copy={copy}>
         <CoverDesk projectId={projectId} />
       </SectionShell>
     );
@@ -131,7 +141,7 @@ export default function StudioSection({ projectId, section }: { projectId: strin
 
   if (section === "validation") {
     return (
-      <SectionShell>
+      <SectionShell copy={copy}>
         <ValidationDesk projectId={projectId} />
       </SectionShell>
     );
@@ -139,7 +149,7 @@ export default function StudioSection({ projectId, section }: { projectId: strin
 
   if (section === "preview") {
     return (
-      <SectionShell>
+      <SectionShell copy={copy}>
         <BookPreview projectId={projectId} />
       </SectionShell>
     );
@@ -147,7 +157,7 @@ export default function StudioSection({ projectId, section }: { projectId: strin
 
   if (section === "exports") {
     return (
-      <SectionShell>
+      <SectionShell copy={copy}>
         <ExportCenter projectId={projectId} />
       </SectionShell>
     );
