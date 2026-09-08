@@ -208,13 +208,19 @@ export async function draftStoryAndPages(
   return { storySummary: result.data.storySummary, pages: pagesForTargets };
 }
 
+function coerceToString(val: unknown): unknown {
+  if (typeof val === "string") return val;
+  if (val && typeof val === "object") return JSON.stringify(val);
+  return String(val ?? "");
+}
+
 const briefDraftSchema = z.object({
-  briefText: z.string().min(1).max(4_000),
-  audience: z.string().min(1).max(1_000),
-  visualStyleAnchors: z.string().min(1).max(4_000),
-  characterBible: z.string().min(1).max(6_000),
-  propAndSettingBible: z.string().min(1).max(6_000),
-  negativePrompt: z.string().min(1).max(2_000),
+  briefText: z.preprocess(coerceToString, z.string().min(1).max(4_000)),
+  audience: z.preprocess(coerceToString, z.string().min(1).max(1_000)),
+  visualStyleAnchors: z.preprocess(coerceToString, z.string().min(1).max(4_000)),
+  characterBible: z.preprocess(coerceToString, z.string().min(1).max(6_000)),
+  propAndSettingBible: z.preprocess(coerceToString, z.string().min(1).max(6_000)),
+  negativePrompt: z.preprocess(coerceToString, z.string().min(1).max(2_000)),
 });
 export type BriefDraft = z.infer<typeof briefDraftSchema>;
 
@@ -235,14 +241,16 @@ export async function draftBookBrief(
     : `visualStyleAnchors should describe palette, line quality, lighting and rendering method.`;
   const prompt = `Write the creative brief for a children's ${coloringPage ? "coloring book" : "picture book"}${options.bookType ? ` (${options.bookType})` : ""} from this idea: "${idea}".
 
-Return JSON only, with exactly these keys: {"briefText","audience","visualStyleAnchors","characterBible","propAndSettingBible","negativePrompt"}.
+Return JSON only, with exactly these six keys. Every value MUST be a plain string — never a nested object or array.
+
+{"briefText":"...","audience":"...","visualStyleAnchors":"...","characterBible":"...","propAndSettingBible":"...","negativePrompt":"..."}
 
 - briefText: two or three sentences on the story and its emotional arc.
 - audience: the reader age range and what that implies for vocabulary and page complexity.
 - visualStyleAnchors: ${styleRule}
-- characterBible: every recurring character, with the concrete physical details needed to redraw them identically -- proportions, hair, clothing, distinguishing marks.
-- propAndSettingBible: every object and location that will appear on more than one page, each described concretely enough to be redrawn identically: shape, size, material, colour, and where it sits. Be specific; this text is repeated into every page prompt and is what stops an object changing between pages. Include at least four items.
-- negativePrompt: what must never appear, including copyrighted characters, trademarks, living artists' styles and readable text.
+- characterBible: a single block of text describing every recurring character with the concrete physical details needed to redraw them identically -- proportions, hair, clothing, distinguishing marks.
+- propAndSettingBible: a single block of text describing every object and location that will appear on more than one page, each described concretely enough to be redrawn identically: shape, size, material, colour, and where it sits. Be specific; this text is repeated into every page prompt. Include at least four items.
+- negativePrompt: a single block of text listing what must never appear, including copyrighted characters, trademarks, living artists' styles and readable text.
 
 Everything must be original. Do not name copyrighted characters, trademarks or living artists.`;
   return await requestStructuredDraft(prompt, briefDraftSchema, env, options.fetchImpl);
