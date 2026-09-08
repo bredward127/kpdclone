@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, ChevronDown, Clock, Info, Loader2, PenLine, Save, Sparkles } from "lucide-react";
+import { CheckCircle2, ChevronDown, Clock, Info, Loader2, PenLine, Plus, Save, Sparkles, Users } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+
+type StoryCharacter = { name: string; description: string };
 
 const fields = [
   ["briefText", "Story summary", "Describe what happens from beginning to end. Include the emotional journey, the lesson or purpose, and anything the reader must understand.", "A gentle story about a kitten who learns to ask for help while exploring a rainy garden."],
@@ -21,7 +23,7 @@ function briefFromData(data: { briefText: string; bookType: string; audience: st
 
 function Help({ text }: { text: string }) { return <span className="group relative inline-flex align-middle"><button type="button" aria-label={`Field information: ${text}`} title={text} className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-[#9aaab3] text-[#52636c] hover:bg-[#e6eef1] focus-visible:bg-[#e6eef1]"><Info size={12} /></button><span role="tooltip" className="pointer-events-none absolute bottom-full left-0 z-20 mb-2 hidden w-64 rounded-xl bg-[#20384e] p-3 text-left text-xs font-normal leading-5 text-white shadow-xl group-hover:block group-focus-within:block">{text}</span></span>; }
 
-export default function BookBriefEditor({ projectId }: { projectId: string }) {
+export default function BookBriefEditor({ projectId, onRequestReference }: { projectId: string; onRequestReference?: (name: string) => void }) {
   const brief = trpc.studio.brief.get.useQuery({ projectId });
   const generations = trpc.studio.brief.listGenerations.useQuery({ projectId });
   const project = trpc.project.get.useQuery({ projectId });
@@ -32,6 +34,7 @@ export default function BookBriefEditor({ projectId }: { projectId: string }) {
   const labelledReferenceCount = (referencesQuery.data ?? []).filter((reference) => reference.label.trim()).length;
   const [idea, setIdea] = useState("");
   const [form, setForm] = useState<FormState>(emptyForm);
+  const [characters, setCharacters] = useState<StoryCharacter[]>([]);
   const [dirty, setDirty] = useState(false);
   const [notice, setNotice] = useState("");
   const dirtyRef = useRef(dirty);
@@ -42,9 +45,20 @@ export default function BookBriefEditor({ projectId }: { projectId: string }) {
   useEffect(() => {
     if (brief.data && !dirtyRef.current) {
       setForm(briefFromData(brief.data));
+      setCharacters(brief.data.characters ?? []);
       setDirty(false);
     }
   }, [brief.data]);
+
+  // A reference whose label already names this character, so the checklist
+  // below can show what still needs art without a hard database link between
+  // a character and a reference -- the label text is the only link needed,
+  // since that is what the composed prompt actually reads.
+  const hasReferenceFor = (characterName: string) => {
+    const needle = characterName.trim().toLowerCase();
+    if (!needle) return false;
+    return (referencesQuery.data ?? []).some((reference) => reference.label.trim().toLowerCase().includes(needle));
+  };
 
   const draftBrief = trpc.studio.brief.draftBriefWithAi.useMutation();
   const fillWithAi = () => {
@@ -53,8 +67,12 @@ export default function BookBriefEditor({ projectId }: { projectId: string }) {
     draftBrief.mutate({ projectId, idea: idea.trim() }, {
       onSuccess: (draft) => {
         setForm((current) => ({ ...current, ...draft }));
+        setCharacters(draft.characters ?? []);
         setDirty(true);
-        setNotice("All six fields filled from your idea. Edit anything you want, then save — nothing is saved until you do.");
+        const characterCount = draft.characters?.length ?? 0;
+        setNotice(characterCount
+          ? `All fields filled from your idea, with ${characterCount} character${characterCount === 1 ? "" : "s"} found below. Add reference art for any of them, then save — nothing is saved until you do.`
+          : "All fields filled from your idea. Edit anything you want, then save — nothing is saved until you do.");
         void generations.refetch();
       },
       onError: (error) => setNotice(error.message),
@@ -83,7 +101,7 @@ export default function BookBriefEditor({ projectId }: { projectId: string }) {
   };
   const save = trpc.studio.brief.save.useMutation();
   const update = (key: keyof FormState, value: string) => { setForm((current) => ({ ...current, [key]: value })); setDirty(true); setNotice(""); };
-  const saveDraft = () => { setNotice(""); save.mutate({ projectId, ...form }, { onSuccess: (result) => { setDirty(false); setNotice(`Draft version ${result.version} saved securely at ${new Date(result.updatedAt).toLocaleTimeString()}.`); }, onError: (error) => setNotice(error.message) }); };
+  const saveDraft = () => { setNotice(""); save.mutate({ projectId, ...form, characters }, { onSuccess: (result) => { setDirty(false); setNotice(`Draft version ${result.version} saved securely at ${new Date(result.updatedAt).toLocaleTimeString()}.`); }, onError: (error) => setNotice(error.message) }); };
 
   if (brief.isLoading) return <p className="rounded-2xl bg-[#fbfaf5] p-6 text-sm text-[var(--muted-ink)]">Loading your story details…</p>;
   if (brief.isError) return <p className="rounded-2xl bg-[#fff0eb] p-6 text-sm text-[#7f433a]">Your story details could not be loaded. Try refreshing the page.</p>;
@@ -92,6 +110,43 @@ export default function BookBriefEditor({ projectId }: { projectId: string }) {
 
   return (
     <section className="space-y-5">
+
+      {/* Book type — decided before AI Quick Fill on purpose. Coloring vs.
+          story book changes the actual instructions "Fill with AI" sends:
+          a coloring book gets a line-quality-only style rule and no colour
+          language, so choosing this after generating means redoing the
+          generation. Image quality genuinely does not affect this or any
+          other drafted text -- it only changes the resolution requested at
+          image generation time -- so it is not gating anything here. */}
+      <div className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5 md:p-6">
+        <p className="text-sm font-semibold text-[var(--ink)]">What kind of book is this?</p>
+        <p className="mt-0.5 text-xs text-[var(--muted-ink)]">Choose this first — it changes what "Fill with AI" below writes.</p>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          {([["full_color", "Story book", "Full-colour illustrated pages — great for picture books and bedtime stories."], ["coloring_line_art", "Coloring book", "Black line art on every page, ready to be coloured in."]] as const).map(([value, label, description]) => (
+            <label key={value} className={`flex cursor-pointer gap-3 rounded-xl border p-3 ${(value === "coloring_line_art") === coloringBook ? "border-[var(--navy)] bg-[#eef4f7]" : "border-[var(--line)] bg-transparent hover:border-[#ccc5b3]"}`}>
+              <input type="radio" name="interiorArtStyle" checked={(value === "coloring_line_art") === coloringBook} onChange={() => setInteriorArtStyle(value)} disabled={updateProject.isPending || project.isLoading} className="mt-1 h-4 w-4 accent-[#203348]" />
+              <span className="min-w-0">
+                <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--ink)]">{value === "coloring_line_art" ? <PenLine size={14} /> : null}{label}</span>
+                <span className="mt-0.5 block text-xs leading-5 text-[var(--muted-ink)]">{description}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+
+        <p className="mt-5 text-sm font-semibold text-[var(--ink)]">Image quality</p>
+        <p className="mt-0.5 text-xs text-[var(--muted-ink)]">Higher quality = better-looking images but costs more per page. Coloring books look great on Low. This only affects image resolution at generation time — it has no effect on the text AI writes.</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          {([["low", "Low — ~$0.009/image", "Best for coloring books."], ["medium", "Medium — ~$0.034/image", "Good for picture books."], ["high", "High — ~$0.133/image", "For detailed illustration."]] as const).map(([value, label, description]) => (
+            <label key={value} className={`flex cursor-pointer gap-2 rounded-xl border p-3 ${(project.data?.imageQuality ?? "low") === value ? "border-[var(--navy)] bg-[#eef4f7]" : "border-[var(--line)] hover:border-[#ccc5b3]"}`}>
+              <input type="radio" name="imageQuality" checked={(project.data?.imageQuality ?? "low") === value} onChange={() => updateProject.mutate({ projectId, imageQuality: value }, { onSuccess: async () => { await Promise.all([utils.project.get.invalidate({ projectId }), project.refetch()]); setNotice(`Quality set to ${label.split("—")[0].trim().toLowerCase()}.`); }, onError: (error) => setNotice(error.message) })} disabled={updateProject.isPending || project.isLoading} className="mt-0.5 h-4 w-4 accent-[#203348]" />
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-[var(--ink)]">{label}</span>
+                <span className="mt-0.5 block text-[11px] leading-4 text-[var(--muted-ink)]">{description}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
 
       {/* AI Quick Fill — hero action */}
       <div className="rounded-[24px] border-2 border-[var(--coral)] bg-[#fff8f5] p-5 md:p-6">
@@ -160,35 +215,44 @@ export default function BookBriefEditor({ projectId }: { projectId: string }) {
         )}
       </div>
 
-      {/* Book type */}
-      <div className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5 md:p-6">
-        <p className="text-sm font-semibold text-[var(--ink)]">What kind of book is this?</p>
-        <div className="mt-3 grid gap-3 md:grid-cols-2">
-          {([["full_color", "Story book", "Full-colour illustrated pages — great for picture books and bedtime stories."], ["coloring_line_art", "Coloring book", "Black line art on every page, ready to be coloured in."]] as const).map(([value, label, description]) => (
-            <label key={value} className={`flex cursor-pointer gap-3 rounded-xl border p-3 ${(value === "coloring_line_art") === coloringBook ? "border-[var(--navy)] bg-[#eef4f7]" : "border-[var(--line)] bg-transparent hover:border-[#ccc5b3]"}`}>
-              <input type="radio" name="interiorArtStyle" checked={(value === "coloring_line_art") === coloringBook} onChange={() => setInteriorArtStyle(value)} disabled={updateProject.isPending || project.isLoading} className="mt-1 h-4 w-4 accent-[#203348]" />
-              <span className="min-w-0">
-                <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--ink)]">{value === "coloring_line_art" ? <PenLine size={14} /> : null}{label}</span>
-                <span className="mt-0.5 block text-xs leading-5 text-[var(--muted-ink)]">{description}</span>
-              </span>
-            </label>
-          ))}
+      {/* Characters in your story — extracted from characterBible so an
+          author can see how many recurring characters exist and attach
+          reference art to any of them (a mother, a sibling, a pet) before
+          moving on to Pages, rather than discovering a missing reference
+          only after scenes are already drafted. */}
+      {characters.length > 0 && (
+        <div className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5 md:p-6">
+          <div className="flex items-center gap-2">
+            <Users size={16} className="text-[var(--coral)]" />
+            <p className="text-sm font-semibold text-[var(--ink)]">Characters in your story ({characters.length})</p>
+          </div>
+          <p className="mt-1 text-xs text-[var(--muted-ink)]">Add reference art for any character before moving on to Pages, so their look stays consistent across every scene they appear in.</p>
+          <div className="mt-4 grid gap-2 md:grid-cols-2">
+            {characters.map((character, index) => {
+              const covered = hasReferenceFor(character.name);
+              return (
+                <div key={`${character.name}-${index}`} className="flex items-start justify-between gap-3 rounded-xl border border-[var(--line)] bg-[#fbfaf5] p-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-[var(--ink)]">{character.name}</p>
+                    {character.description && <p className="mt-0.5 text-xs leading-4 text-[var(--muted-ink)]">{character.description}</p>}
+                    <span className={`mt-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${covered ? "bg-[#e9f2ed] text-[#356b63]" : "bg-[#fff4e0] text-[#8a6524]"}`}>
+                      {covered ? <CheckCircle2 size={10} /> : null}
+                      {covered ? "Has reference art" : "No reference yet"}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onRequestReference?.(character.name)}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--coral)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--coral)] hover:bg-[#fff0eb]"
+                  >
+                    <Plus size={11} />{covered ? "Add another" : "Add reference"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
-
-        <p className="mt-5 text-sm font-semibold text-[var(--ink)]">Image quality</p>
-        <p className="mt-0.5 text-xs text-[var(--muted-ink)]">Higher quality = better-looking images but costs more per page. Coloring books look great on Low.</p>
-        <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          {([["low", "Low — ~$0.009/image", "Best for coloring books."], ["medium", "Medium — ~$0.034/image", "Good for picture books."], ["high", "High — ~$0.133/image", "For detailed illustration."]] as const).map(([value, label, description]) => (
-            <label key={value} className={`flex cursor-pointer gap-2 rounded-xl border p-3 ${(project.data?.imageQuality ?? "low") === value ? "border-[var(--navy)] bg-[#eef4f7]" : "border-[var(--line)] hover:border-[#ccc5b3]"}`}>
-              <input type="radio" name="imageQuality" checked={(project.data?.imageQuality ?? "low") === value} onChange={() => updateProject.mutate({ projectId, imageQuality: value }, { onSuccess: async () => { await Promise.all([utils.project.get.invalidate({ projectId }), project.refetch()]); setNotice(`Quality set to ${label.split("—")[0].trim().toLowerCase()}.`); }, onError: (error) => setNotice(error.message) })} disabled={updateProject.isPending || project.isLoading} className="mt-0.5 h-4 w-4 accent-[#203348]" />
-              <span className="min-w-0">
-                <span className="block text-sm font-semibold text-[var(--ink)]">{label}</span>
-                <span className="mt-0.5 block text-[11px] leading-4 text-[var(--muted-ink)]">{description}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-      </div>
+      )}
 
       {/* Story fields */}
       <div className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5 md:p-6">

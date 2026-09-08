@@ -169,6 +169,43 @@ describe("uploaded reference art reaches scene drafting", () => {
   });
 });
 
+describe("the brief draft returns a named character list", () => {
+  it("parses the characters the model returns", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(completion(JSON.stringify({
+      briefText: "A story.", audience: "4-8", visualStyleAnchors: "Ink.",
+      characterBible: "Milo and his mother.", propAndSettingBible: "A garden.", negativePrompt: "No logos.",
+      characters: [{ name: "Milo", description: "A small orange kitten." }, { name: "Milo's mother", description: "A larger orange cat." }],
+    })));
+    const result = await draftBookBrief("A kitten and his mother explore a garden.", { env });
+    expect(result.characters).toEqual([
+      { name: "Milo", description: "A small orange kitten." },
+      { name: "Milo's mother", description: "A larger orange cat." },
+    ]);
+    fetchMock.mockRestore();
+  });
+
+  it("defaults to an empty list when the model omits the field entirely", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(completion(JSON.stringify({
+      briefText: "A story.", audience: "4-8", visualStyleAnchors: "Ink.",
+      characterBible: "A fox.", propAndSettingBible: "A den.", negativePrompt: "No logos.",
+    })));
+    const result = await draftBookBrief("A fox learns to share.", { env });
+    expect(result.characters).toEqual([]);
+    fetchMock.mockRestore();
+  });
+
+  it("coerces a nested object into a string rather than failing outright", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(completion(JSON.stringify({
+      briefText: "A story.", audience: "4-8", visualStyleAnchors: "Ink.",
+      characterBible: "A fox.", propAndSettingBible: "A den.", negativePrompt: "No logos.",
+      characters: [{ name: "Fern", description: { nested: "oops" } }],
+    })));
+    const result = await draftBookBrief("A fox learns to share.", { env });
+    expect(typeof result.characters[0].description).toBe("string");
+    fetchMock.mockRestore();
+  });
+});
+
 describe("uploaded reference art reaches brief drafting", () => {
   const references = [
     { label: "Danny's car — a red 1967 Mustang convertible", usageNotes: "Use whenever the car appears; match colour and shape exactly.", referenceKind: "character_sheet" },
@@ -257,7 +294,7 @@ describe("AI-assisted cover copy drafting", () => {
     briefText: "A shy raccoon learns to ask for help in a moonlit forest.",
     bookType: "picture_book", audience: "ages 4-8",
     visualStyleAnchors: "Indigo gouache.", characterBible: "Remy is a small grey raccoon with a striped tail.",
-    propAndSettingBible: "", negativePrompt: "No logos.",
+    propAndSettingBible: "", negativePrompt: "No logos.", characters: [{ name: "Remy", description: "A small grey raccoon with a striped tail." }],
     version: 1, status: "draft", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
   };
   const page = (n: number, scene: string): PagePlanRecord => ({

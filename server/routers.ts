@@ -156,6 +156,7 @@ export function createAppRouter(
           characterBible: z.string().max(10_000),
           propAndSettingBible: z.string().max(10_000).default(""),
           negativePrompt: z.string().max(10_000),
+          characters: z.array(z.object({ name: z.string().trim().min(1).max(120), description: z.string().max(600) })).max(30).default([]),
         })).mutation(({ ctx, input }) => {
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) {
             throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });

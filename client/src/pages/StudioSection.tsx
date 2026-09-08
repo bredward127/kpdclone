@@ -32,6 +32,9 @@ export default function StudioSection({ projectId, section }: { projectId: strin
   const project = trpc.project.get.useQuery({ projectId });
   // Which page the board handed off to the composer and generation desk below.
   const [focusPagePlanId, setFocusPagePlanId] = useState("");
+  // A character list row's "Add reference for X" sets this so the Reference
+  // Library (a sibling below it) can prefill and scroll to its upload form.
+  const [requestedReferenceLabel, setRequestedReferenceLabel] = useState("");
   const copy = sectionCopy[section];
 
   if (project.isLoading) return <LoadingState label="Loading project workspace" />;
@@ -61,9 +64,13 @@ export default function StudioSection({ projectId, section }: { projectId: strin
             page prompt, so a reference's label has to exist before "Fill
             with AI" writes those fields, not be uploaded afterward to a brief
             that already invented a conflicting description. */}
-        <VisualReferenceDesk projectId={projectId} />
+        <VisualReferenceDesk
+          projectId={projectId}
+          requestedLabel={requestedReferenceLabel}
+          onRequestedLabelHandled={() => setRequestedReferenceLabel("")}
+        />
         <div className="mt-8">
-          <BookBriefEditor projectId={projectId} />
+          <BookBriefEditor projectId={projectId} onRequestReference={setRequestedReferenceLabel} />
         </div>
       </SectionShell>
     );

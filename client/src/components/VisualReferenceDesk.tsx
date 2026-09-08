@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, FileImage, Pencil, RefreshCw, ShieldCheck, Trash2, UploadCloud, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { EmptyState, ErrorState, LoadingState } from "./States";
@@ -26,13 +26,33 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-export default function VisualReferenceDesk({ projectId }: { projectId: string }) {
+export default function VisualReferenceDesk({
+  projectId,
+  requestedLabel,
+  onRequestedLabelHandled,
+}: {
+  projectId: string;
+  /** Set by a sibling ("Add reference for Milo's mother") to prefill and focus the upload form. */
+  requestedLabel?: string;
+  onRequestedLabelHandled?: () => void;
+}) {
   const utils = trpc.useUtils();
   const inputRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const labelInputRef = useRef<HTMLInputElement>(null);
   const [kind, setKind] = useState<keyof typeof kindLabels>("character_sheet");
   const [provenance, setProvenance] = useState<keyof typeof provenanceLabels>("user_owned");
   const [label, setLabel] = useState("");
   const [usageNotes, setUsageNotes] = useState("");
+
+  useEffect(() => {
+    if (!requestedLabel) return;
+    setLabel(requestedLabel);
+    rootRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    labelInputRef.current?.focus();
+    onRequestedLabelHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedLabel]);
   const [rightsAttestation, setRightsAttestation] = useState(false);
   const [replaceTarget, setReplaceTarget] = useState<string | undefined>();
   const [selectedName, setSelectedName] = useState("");
@@ -92,7 +112,7 @@ export default function VisualReferenceDesk({ projectId }: { projectId: string }
 
   return (
     <>
-    <div className="space-y-7">
+    <div className="space-y-7" ref={rootRef}>
       <div className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5 shadow-[0_12px_38px_rgba(32,51,72,.05)] md:p-7">
         <div className="flex flex-wrap items-start justify-between gap-5">
           <div>
@@ -117,7 +137,7 @@ export default function VisualReferenceDesk({ projectId }: { projectId: string }
         <div className="mt-5 grid gap-4 md:grid-cols-2">
           <label className="block">
             <span className="mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted-ink)]">What is this? <span className="normal-case text-[var(--muted-ink)]">(optional, but recommended)</span></span>
-            <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="e.g. Danny's car — a red 1967 Mustang convertible" maxLength={200} className="field mt-2" />
+            <input ref={labelInputRef} value={label} onChange={(event) => setLabel(event.target.value)} placeholder="e.g. Danny's car — a red 1967 Mustang convertible" maxLength={200} className="field mt-2" />
           </label>
           <label className="block">
             <span className="mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted-ink)]">How should it be used?</span>

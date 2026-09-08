@@ -47,6 +47,8 @@ export function listBriefGenerations(db: AppDatabase, userId: string, projectId:
     .all(userId, projectId, limit) as BriefGenerationRecord[];
 }
 
+export type StoryCharacter = { name: string; description: string };
+
 export type BookBriefRecord = {
   id: string;
   userId: string;
@@ -59,11 +61,26 @@ export type BookBriefRecord = {
   /** Recurring objects and locations, repeated verbatim into every page prompt. */
   propAndSettingBible: string;
   negativePrompt: string;
+  /** Named recurring characters extracted out of characterBible's prose, so an author can see how many there are and attach reference art to each one individually. */
+  characters: StoryCharacter[];
   version: number;
   status: LifecycleStatus;
   createdAt: string;
   updatedAt: string;
 };
+
+function parseCharacters(raw: unknown): StoryCharacter[] {
+  try {
+    const value = JSON.parse(String(raw ?? "[]")) as unknown;
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+      .map((entry) => ({ name: String(entry.name ?? "").trim(), description: String(entry.description ?? "").trim() }))
+      .filter((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
 
 export type PagePlanRecord = {
   id: string;
@@ -81,19 +98,21 @@ export type PagePlanRecord = {
 };
 
 export function getBriefForProject(db: AppDatabase, userId: string, projectId: string): BookBriefRecord | null {
-  return (
-    db
-      .prepare(
-        `SELECT id, user_id AS userId, project_id AS projectId, brief_text AS briefText,
-                book_type AS bookType, audience, visual_style_anchors AS visualStyleAnchors,
-                character_bible AS characterBible, prop_and_setting_bible AS propAndSettingBible, negative_prompt AS negativePrompt,
-                version, status, created_at AS createdAt, updated_at AS updatedAt
-         FROM book_briefs
-         WHERE user_id = ? AND project_id = ?
-         ORDER BY version DESC LIMIT 1`,
-      )
-      .get(userId, projectId) as BookBriefRecord | undefined
-  ) ?? null;
+  const row = db
+    .prepare(
+      `SELECT id, user_id AS userId, project_id AS projectId, brief_text AS briefText,
+              book_type AS bookType, audience, visual_style_anchors AS visualStyleAnchors,
+              character_bible AS characterBible, prop_and_setting_bible AS propAndSettingBible, negative_prompt AS negativePrompt,
+              characters_json AS charactersJson,
+              version, status, created_at AS createdAt, updated_at AS updatedAt
+       FROM book_briefs
+       WHERE user_id = ? AND project_id = ?
+       ORDER BY version DESC LIMIT 1`,
+    )
+    .get(userId, projectId) as (Omit<BookBriefRecord, "characters"> & { charactersJson: string }) | undefined;
+  if (!row) return null;
+  const { charactersJson, ...rest } = row;
+  return { ...rest, characters: parseCharacters(charactersJson) };
 }
 
 export function listPagePlans(db: AppDatabase, userId: string, projectId: string): PagePlanRecord[] {
@@ -376,16 +395,18 @@ export function createBookBrief(
     characterBible: string;
     propAndSettingBible?: string;
     negativePrompt: string;
+    characters?: StoryCharacter[];
   },
 ): BookBriefRecord {
   const previous = getBriefForProject(db, userId, input.projectId);
   const version = (previous?.version ?? 0) + 1;
   const now = new Date().toISOString();
+  const charactersJson = JSON.stringify((input.characters ?? []).filter((character) => character.name.trim()));
   db.prepare(
     `INSERT INTO book_briefs
-      (id, user_id, project_id, brief_text, book_type, audience, visual_style_anchors, character_bible, prop_and_setting_bible, negative_prompt, version, created_at, updated_at)
-     VALUES (@id, @userId, @projectId, @briefText, @bookType, @audience, @visualStyleAnchors, @characterBible, @propAndSettingBible, @negativePrompt, @version, @now, @now)`,
-  ).run({ ...input, propAndSettingBible: input.propAndSettingBible ?? "", userId, version, now });
+      (id, user_id, project_id, brief_text, book_type, audience, visual_style_anchors, character_bible, prop_and_setting_bible, negative_prompt, characters_json, version, created_at, updated_at)
+     VALUES (@id, @userId, @projectId, @briefText, @bookType, @audience, @visualStyleAnchors, @characterBible, @propAndSettingBible, @negativePrompt, @charactersJson, @version, @now, @now)`,
+  ).run({ ...input, propAndSettingBible: input.propAndSettingBible ?? "", charactersJson, userId, version, now });
   return getBriefForProject(db, userId, input.projectId)!;
 }
 

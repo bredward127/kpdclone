@@ -250,6 +250,11 @@ function coerceToString(val: unknown): unknown {
   return String(val ?? "");
 }
 
+const storyCharacterDraftSchema = z.object({
+  name: z.preprocess(coerceToString, z.string().min(1).max(120)),
+  description: z.preprocess(coerceToString, z.string().max(600)),
+});
+
 const briefDraftSchema = z.object({
   briefText: z.preprocess(coerceToString, z.string().min(1).max(4_000)),
   audience: z.preprocess(coerceToString, z.string().min(1).max(1_000)),
@@ -257,6 +262,13 @@ const briefDraftSchema = z.object({
   characterBible: z.preprocess(coerceToString, z.string().min(1).max(6_000)),
   propAndSettingBible: z.preprocess(coerceToString, z.string().min(1).max(6_000)),
   negativePrompt: z.preprocess(coerceToString, z.string().min(1).max(2_000)),
+  /**
+   * The same characters characterBible describes in prose, pulled out as a
+   * named list so an author can see how many recurring characters the story
+   * has and attach reference art to each one individually, instead of having
+   * to read a paragraph and mentally parse out who is in it.
+   */
+  characters: z.array(storyCharacterDraftSchema).max(30).default([]),
 });
 export type BriefDraft = z.infer<typeof briefDraftSchema>;
 
@@ -289,18 +301,19 @@ export async function draftBookBrief(
     : "";
   const prompt = `Write the creative brief for a children's ${coloringPage ? "coloring book" : "picture book"}${options.bookType ? ` (${options.bookType})` : ""} from this idea: "${idea}".
 
-Return JSON only, with exactly these six keys. Every value MUST be a plain string — never a nested object or array.
+Return JSON only, with exactly these seven keys.
 
-{"briefText":"...","audience":"...","visualStyleAnchors":"...","characterBible":"...","propAndSettingBible":"...","negativePrompt":"..."}
+{"briefText":"...","audience":"...","visualStyleAnchors":"...","characterBible":"...","propAndSettingBible":"...","negativePrompt":"...","characters":[{"name":"...","description":"..."}]}
 
-- briefText: two or three sentences on the story and its emotional arc.
-- audience: the reader age range and what that implies for vocabulary and page complexity.
-- visualStyleAnchors: ${styleRule}
-- characterBible: a single block of text describing every recurring character with the concrete physical details needed to redraw them identically -- proportions, hair, clothing, distinguishing marks.
-- propAndSettingBible: a single block of text describing every object and location that will appear on more than one page, each described concretely enough to be redrawn identically: shape, size, material, colour, and where it sits. Be specific; this text is repeated into every page prompt. Include at least four items.
-- negativePrompt: a single block of text listing what must never appear, including copyrighted characters, trademarks, living artists' styles and readable text.
+- briefText: a plain string -- two or three sentences on the story and its emotional arc.
+- audience: a plain string -- the reader age range and what that implies for vocabulary and page complexity.
+- visualStyleAnchors: a plain string. ${styleRule}
+- characterBible: a plain string -- a single block of text describing every recurring character with the concrete physical details needed to redraw them identically -- proportions, hair, clothing, distinguishing marks.
+- propAndSettingBible: a plain string -- a single block of text describing every object and location that will appear on more than one page, each described concretely enough to be redrawn identically: shape, size, material, colour, and where it sits. Be specific; this text is repeated into every page prompt. Include at least four items.
+- negativePrompt: a plain string -- listing what must never appear, including copyrighted characters, trademarks, living artists' styles and readable text.
+- characters: an array with one entry per NAMED recurring character described in characterBible (a mother, a sibling, a pet -- anyone who recurs, not just the protagonist). Each entry is {"name":"...","description":"..."}, where name is short (e.g. "Milo", "Milo's mother") and description is one sentence of the same physical detail already given in characterBible for that character. This lets the author see exactly how many characters the story has, so they can attach reference art to each one before pages are generated.
 
-Everything must be original. Do not name copyrighted characters, trademarks or living artists.${referenceContext}`;
+Every string value must be a plain string, never a nested object or array. Everything must be original. Do not name copyrighted characters, trademarks or living artists.${referenceContext}`;
   return await requestStructuredDraft(prompt, briefDraftSchema, env, options.fetchImpl);
 }
 
