@@ -5,7 +5,7 @@ import { z } from "zod";
 import { clearSession } from "./auth";
 import { isFalAdministrator } from "./fal-admin";
 import { getFalConnectionStatus, type FalConnectionStatus } from "./fal";
-import { createBookBrief, createPagePlan, updatePagePlan, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, getGeneratedAssetForUser, getGenerationJobForUser, insertGenerationJob, listAssetVariantsForUser, listAuditEvents, listExportPackages, listGeneratedAssetsForPage, listGenerationJobsForUser, listPagePlans, reviewGeneratedAsset, transitionAssetStatus, transitionGenerationJob, updatePageApproval, deletePagePlan, saveBriefGeneration, listBriefGenerations } from "./db-studio";
+import { createBookBrief, createPagePlan, updatePagePlan, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, getGeneratedAssetForUser, getGenerationJobForUser, insertGenerationJob, listAssetVariantsForUser, listAuditEvents, listExportPackages, listGeneratedAssetsForPage, listGenerationJobsForUser, listPagePlans, reviewGeneratedAsset, transitionAssetStatus, transitionGenerationJob, updatePageApproval, deletePagePlan, saveBriefGeneration, listBriefGenerations, listActiveJobIdsForProject } from "./db-studio";
 import { lifecycleStatuses, pageApprovalStates } from "../shared/studio";
 import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
 import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset } from "./reference-assets";
@@ -349,6 +349,13 @@ export function createAppRouter(
           if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
           try { return await generationService.cancel(db, ctx.user.id, input.jobId); }
           catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Generation cancellation could not be requested safely." }); }
+        }),
+        cancelAll: protectedProcedure.input(projectIdInput).mutation(async ({ ctx, input }) => {
+          if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
+          const jobIds = listActiveJobIdsForProject(db, ctx.user.id, input.projectId);
+          if (!jobIds.length) return { cancelled: 0, total: 0 };
+          const results = await Promise.allSettled(jobIds.map((id) => generationService!.cancel(db, ctx.user.id, id)));
+          return { cancelled: results.filter((r) => r.status === "fulfilled").length, total: jobIds.length };
         }),
         reconcile: protectedProcedure.input(z.object({ jobId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
           if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });

@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, CircleDashed, Grid2x2, ImageIcon, List, Loader2, Lock, Sparkles, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, ChevronDown, CircleDashed, Grid2x2, ImageIcon, List, Loader2, Lock, Sparkles, StopCircle, X } from "lucide-react";
 import { estimateImageCostUsd, formatUsd } from "../../../shared/image-cost";
 import { trpc } from "@/lib/trpc";
 import { ErrorState, LoadingState } from "./States";
@@ -12,7 +12,7 @@ import { ErrorState, LoadingState } from "./States";
  */
 export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: string; onOpenPage: (pagePlanId: string) => void }) {
   const utils = trpc.useUtils();
-  const board = trpc.studio.pages.board.useQuery({ projectId }, { refetchInterval: 8_000 });
+  const board = trpc.studio.pages.board.useQuery({ projectId }, { refetchInterval: 10_000, placeholderData: (prev) => prev });
   const models = trpc.studio.generationJobs.models.useQuery();
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -21,8 +21,26 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
   const [openPrompt, setOpenPrompt] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<{ url: string; pageNumber: number } | null>(null);
 
+  // Cache access URLs per asset ID so re-fetching the board doesn't force the
+  // browser to reload images that haven't changed (each poll generates a new
+  // signed URL even for the same file, causing visible flicker and layout shift).
+  const stableUrlsRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    const map = stableUrlsRef.current;
+    const currentIds = new Set<string>();
+    for (const row of board.data ?? []) {
+      if (row.latestAsset) {
+        currentIds.add(row.latestAsset.id);
+        if (!map.has(row.latestAsset.id)) map.set(row.latestAsset.id, row.latestAsset.accessUrl);
+      }
+    }
+    for (const id of map.keys()) { if (!currentIds.has(id)) map.delete(id); }
+  }, [board.data]);
+  const stableUrl = (assetId: string, fallback: string) => stableUrlsRef.current.get(assetId) ?? fallback;
+
   const freeze = trpc.studio.prompts.freeze.useMutation();
   const submit = trpc.studio.generationJobs.submit.useMutation();
+  const cancelAll = trpc.studio.generationJobs.cancelAll.useMutation();
 
   const rows = board.data ?? [];
   const activeModel = models.data?.[0] ?? null;
@@ -125,6 +143,25 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
         <span className="mx-1 h-5 w-px bg-[#ddd6c6]" />
         <button type="button" disabled={Boolean(busy) || !freezable.length} onClick={() => void freezePages(freezable)} className="rounded-full border border-[var(--line)] px-4 py-2 text-xs font-semibold text-[var(--ink)] disabled:opacity-45">Freeze all drafts ({freezable.length})</button>
         <button type="button" disabled={Boolean(busy) || !readyToGenerate.length} onClick={() => void generatePages(readyToGenerate)} className="rounded-full border border-[var(--line)] px-4 py-2 text-xs font-semibold text-[var(--ink)] disabled:opacity-45">Generate all ready ({readyToGenerate.length}) · {costFor(readyToGenerate.length)}</button>
+        {rows.some((row) => row.activeJob) && (
+          <button
+            type="button"
+            disabled={Boolean(busy) || cancelAll.isPending}
+            onClick={async () => {
+              setBusy("Cancelling active jobs…");
+              try {
+                const result = await cancelAll.mutateAsync({ projectId });
+                await refresh();
+                setNotice({ text: `Cancelled ${result.cancelled} of ${result.total} active job${result.total === 1 ? "" : "s"}. You can generate again now.`, kind: "info" });
+              } catch (error) {
+                setNotice({ text: error instanceof Error ? error.message : "Could not cancel jobs.", kind: "error" });
+              } finally { setBusy(null); }
+            }}
+            className="inline-flex items-center gap-1.5 rounded-full border border-[#e2b4a8] px-4 py-2 text-xs font-semibold text-[#7f433a] hover:bg-[#fff0eb] disabled:opacity-45"
+          >
+            <StopCircle size={13} />Cancel stuck jobs
+          </button>
+        )}
         <span className="ml-auto inline-flex overflow-hidden rounded-full border border-[var(--line)]">
           <button type="button" onClick={() => setView("gallery")} aria-pressed={view === "gallery"} className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold ${view === "gallery" ? "bg-[var(--navy)] text-white" : "text-[var(--ink)]"}`}><Grid2x2 size={13} />Gallery</button>
           <button type="button" onClick={() => setView("list")} aria-pressed={view === "list"} className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold ${view === "list" ? "bg-[var(--navy)] text-white" : "text-[var(--ink)]"}`}><List size={13} />List</button>
@@ -144,8 +181,8 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
               <article key={row.pagePlanId} className={`overflow-hidden rounded-2xl border bg-[var(--paper-strong)] ${selected.includes(row.pagePlanId) ? "border-[var(--navy)]" : "border-[var(--line)]"}`}>
                 <div className="relative aspect-square bg-[#f2efe4]">
                   {row.latestAsset?.accessUrl ? (
-                    <button type="button" onClick={() => setLightbox({ url: row.latestAsset!.accessUrl, pageNumber: row.pageNumber })} className="block h-full w-full" title={`Open page ${row.pageNumber} full size`}>
-                      <img src={row.latestAsset.accessUrl} alt={`Page ${row.pageNumber} generated illustration`} loading="lazy" className="h-full w-full object-contain" />
+                    <button type="button" onClick={() => setLightbox({ url: stableUrl(row.latestAsset!.id, row.latestAsset!.accessUrl), pageNumber: row.pageNumber })} className="block h-full w-full" title={`Open page ${row.pageNumber} full size`}>
+                      <img src={stableUrl(row.latestAsset.id, row.latestAsset.accessUrl)} alt={`Page ${row.pageNumber} generated illustration`} loading="lazy" className="h-full w-full object-contain" />
                     </button>
                   ) : (
                     <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-[var(--muted-ink)]">
@@ -204,7 +241,7 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
                 <td className="py-3"><input type="checkbox" aria-label={`Select page ${row.pageNumber}`} checked={selected.includes(row.pagePlanId)} onChange={() => toggle(row.pagePlanId)} className="h-4 w-4 accent-[#203348]" /></td>
                 <td className="py-3 pr-3"><span className="mono text-xs font-semibold text-[var(--ink)]">{String(row.pageNumber).padStart(2, "0")}</span></td>
                 <td className="py-3 pr-3">{row.latestAsset?.accessUrl
-                  ? <button type="button" onClick={() => setLightbox({ url: row.latestAsset!.accessUrl, pageNumber: row.pageNumber })} title={`Open page ${row.pageNumber} full size`}><img src={row.latestAsset.accessUrl} alt={`Page ${row.pageNumber} thumbnail`} loading="lazy" className="h-14 w-14 rounded-lg border border-[var(--line)] bg-white object-contain" /></button>
+                  ? <button type="button" onClick={() => setLightbox({ url: stableUrl(row.latestAsset!.id, row.latestAsset!.accessUrl), pageNumber: row.pageNumber })} title={`Open page ${row.pageNumber} full size`}><img src={stableUrl(row.latestAsset.id, row.latestAsset.accessUrl)} alt={`Page ${row.pageNumber} thumbnail`} loading="lazy" className="h-14 w-14 rounded-lg border border-[var(--line)] bg-white object-contain" /></button>
                   : <span className="flex h-14 w-14 items-center justify-center rounded-lg border border-dashed border-[var(--line)] text-[var(--muted-ink)]">{row.activeJob ? <Loader2 size={14} className="animate-spin" /> : <ImageIcon size={14} />}</span>}</td>
                 <td className="max-w-[280px] py-3 pr-3"><p className="truncate text-xs text-[var(--ink)]">{row.sceneDirection || <span className="text-[var(--muted-ink)]">No scene direction</span>}</p></td>
                 <td className="py-3 pr-3">

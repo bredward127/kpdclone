@@ -541,6 +541,14 @@ export function listAuditEvents(db: AppDatabase, userId: string, projectId: stri
   ).all(userId, projectId) as Array<Record<string, unknown>>;
 }
 
+export function listActiveJobIdsForProject(db: AppDatabase, userId: string, projectId: string): string[] {
+  return (
+    db
+      .prepare(`SELECT id FROM generation_jobs WHERE user_id = ? AND project_id = ? AND local_status IN ('queued', 'in_progress', 'cancellation_requested') ORDER BY created_at DESC`)
+      .all(userId, projectId) as Array<{ id: string }>
+  ).map((row) => row.id);
+}
+
 export function listGenerationJobsForUser(db: AppDatabase, userId: string, projectId: string, pagePlanId?: string): GenerationJobRecord[] {
   const rows = db.prepare(`SELECT id FROM generation_jobs WHERE user_id = ? AND project_id = ? ${pagePlanId ? "AND page_plan_id = ?" : ""} ORDER BY created_at DESC`).all(...(pagePlanId ? [userId, projectId, pagePlanId] : [userId, projectId])) as Array<{ id: string }>;
   return rows.map((row) => getGenerationJobForUser(db, userId, row.id)).filter((row): row is GenerationJobRecord => Boolean(row));
