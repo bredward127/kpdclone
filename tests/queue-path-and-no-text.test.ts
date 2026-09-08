@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { queueRequestPath } from "../server/fal-queue";
 import { createDatabase, createProject, upsertUser } from "../server/db";
 import { createBookBrief, createPagePlan } from "../server/db-studio";
-import { composePromptFromSavedProject } from "../server/prompt-composer";
+import { composePromptFromSavedProject, NO_TEXT_RULE_MARKER } from "../server/prompt-composer";
 
 describe("queue request paths", () => {
   it("addresses request sub-paths at the application, not the model sub-route", () => {
@@ -76,5 +76,32 @@ describe("no text in generated artwork", () => {
     });
     expect(composed.negativePrompt).toContain("no scary faces");
     expect(composed.negativePrompt).toContain("lettering");
+  });
+});
+
+describe("stale frozen prompts are not reused", () => {
+  const owner = { id: "stale-owner", name: "Owner", email: "o@example.com" };
+
+  it("recognises a pre-fix prompt by the absence of the no-text rule", () => {
+    // Prompts frozen before the rule existed carry the page's story text, and
+    // regenerating from one puts that lettering back into the artwork.
+    const preFix = "[SPECIFIC PAGE SCENE]\nPage 4: Mina opens the gate.\nPage text: THE GATE CREAKED.";
+    const current = `[SPECIFIC PAGE SCENE]\nPage 4: Mina opens the gate.\n\n[${NO_TEXT_RULE_MARKER}]\nDraw artwork only.`;
+    expect(preFix.includes(NO_TEXT_RULE_MARKER)).toBe(false);
+    expect(current.includes(NO_TEXT_RULE_MARKER)).toBe(true);
+  });
+
+  it("marks every freshly composed prompt as current", () => {
+    const db = createDatabase(":memory:");
+    upsertUser(db, owner);
+    const project = createProject(db, owner.id, { id: "stale-p", name: "B", brief: "" });
+    createBookBrief(db, owner.id, { id: "stale-b", projectId: project.id, briefText: "A story.", bookType: "picture_book", audience: "4-8", visualStyleAnchors: "Ink.", characterBible: "A fox.", negativePrompt: "no logos" });
+    const page = createPagePlan(db, owner.id, { id: "stale-pg", projectId: project.id, pageNumber: 1, sceneDirection: "A fox naps.", pageText: "Sleep well." });
+    const composed = composePromptFromSavedProject(db, owner.id, {
+      projectId: project.id, pagePlanId: page.id,
+      generationModel: "M", generationEndpoint: "e/m", aspectRatio: "1:1", referenceAssetIds: [],
+    });
+    expect(composed.prompt).toContain(NO_TEXT_RULE_MARKER);
+    expect(composed.prompt).not.toContain("Sleep well.");
   });
 });

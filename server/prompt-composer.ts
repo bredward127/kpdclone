@@ -5,6 +5,8 @@ import { getBriefForProject, getPagePlanForUser } from "./db-studio";
 import { COLORING_CONFLICT_PATTERN, COLORING_PAGE_RULES, coloringPageNegativePrompt, isColoringLineArt } from "../shared/coloring-book";
 import { listReferenceAssets, assertReferenceCanBeUsedForGeneration, type ReferenceAssetRecord } from "./reference-assets";
 
+export const NO_TEXT_RULE_MARKER = "NO TEXT IN THE IMAGE — BINDING";
+
 export type PromptLintSeverity = "warning" | "blocking";
 export type PromptLintCode =
   | "missing_subject"
@@ -242,7 +244,7 @@ export function composePrompt(input: {
      * is told to leave room for it and to draw no lettering at all.
      */
     section("SPECIFIC PAGE SCENE", [`Page ${page?.pageNumber ?? "?"}: ${page?.sceneDirection || "Not supplied"}`]),
-    section("NO TEXT IN THE IMAGE — BINDING", [
+    section(NO_TEXT_RULE_MARKER, [
       "Draw artwork only. The image must contain no text of any kind: no words, letters, numerals, captions, titles, speech bubbles, labels, signage, handwriting, logos, watermarks or signatures, in any language or script.",
       "The story text for this page is typeset separately after generation, so do not illustrate, letter or transcribe it. Leave the composition uncluttered where the text will sit; do not draw a text box, banner, scroll or placeholder for it.",
       "Objects that would normally carry writing — books, signs, packaging — must be drawn blank or with purely decorative, non-letterform marks.",

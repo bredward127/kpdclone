@@ -11,7 +11,7 @@ import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
 import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset } from "./reference-assets";
 import { getReferenceValidationLimits } from "./reference-validation";
 import { draftBookBrief, draftStoryAndPages } from "./story-drafting";
-import { composePromptFromSavedProject, createPromptVersion, freezePromptVersion, getPromptVersionForUser, listPromptVersions, restorePromptVersion } from "./prompt-composer";
+import { composePromptFromSavedProject, createPromptVersion, freezePromptVersion, getPromptVersionForUser, listPromptVersions, restorePromptVersion, NO_TEXT_RULE_MARKER } from "./prompt-composer";
 import { createFalGenerationService, type FalGenerationService } from "./fal-generation";
 import { getFalQueueClient } from "./fal-queue";
 import { createAuditEvent } from "./db-studio";
@@ -350,7 +350,16 @@ export function createAppRouter(
               if (!page || page.projectId !== input.projectId) { skipped.push({ pagePlanId, reason: "Page not found in this book." }); continue; }
               if (!page.sceneDirection.trim()) { skipped.push({ pagePlanId, reason: `Page ${page.pageNumber} has no scene description yet.` }); continue; }
               if (input.reuseFrozen) {
-                const already = listPromptVersions(db, ctx.user.id, input.projectId, pagePlanId).find((version) => version.status === "approved");
+                /**
+                 * Reuse a frozen prompt only if it was composed under the
+                 * current rules. A prompt frozen before the no-text rule still
+                 * carries the page's story text, and regenerating from it puts
+                 * that lettering back into the artwork -- at full price, on a
+                 * page the author had already approved. Stale prompts are
+                 * recomposed and re-frozen instead of reused.
+                 */
+                const already = listPromptVersions(db, ctx.user.id, input.projectId, pagePlanId)
+                  .find((version) => version.status === "approved" && version.prompt.includes(NO_TEXT_RULE_MARKER));
                 if (already) { prepared.push({ pagePlanId, promptVersionId: already.id, version: already.version }); continue; }
               }
               const composed = composePromptFromSavedProject(db, ctx.user.id, {
