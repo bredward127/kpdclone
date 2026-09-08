@@ -188,7 +188,11 @@ export function createAppRouter(
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
           try {
             const project = getProjectForUser(db, ctx.user.id, input.projectId);
-            return await draftStoryAndPages(getBriefForProject(db, ctx.user.id, input.projectId), listPagePlans(db, ctx.user.id, input.projectId), input.pageCount, process.env, { targetPageNumbers: input.pageNumbers, interiorArtStyle: project?.interiorArtStyle });
+            // References uploaded on the Story step have to reach the model
+            // drafting scene directions, or a page can invent a car that looks
+            // nothing like the one already labelled for continuity.
+            const references = listReferenceAssets(db, ctx.user.id, input.projectId).map((reference) => ({ label: reference.label, usageNotes: reference.usageNotes, referenceKind: reference.referenceKind }));
+            return await draftStoryAndPages(getBriefForProject(db, ctx.user.id, input.projectId), listPagePlans(db, ctx.user.id, input.projectId), input.pageCount, process.env, { targetPageNumbers: input.pageNumbers, interiorArtStyle: project?.interiorArtStyle, references });
           } catch (error) {
             throw new TRPCError({ code: "PRECONDITION_FAILED", message: error instanceof Error ? error.message : "AI-assisted planning is not configured." });
           }

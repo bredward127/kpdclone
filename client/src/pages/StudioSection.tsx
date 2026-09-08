@@ -64,7 +64,15 @@ export default function StudioSection({ projectId, section }: { projectId: strin
   if (section === "blueprint") {
     return (
       <SectionShell>
-        <BlueprintPlanner projectId={projectId} />
+        {/* Reference art has to be uploaded and labelled before scene
+            directions are drafted, not after: the AI that writes each page's
+            sceneDirection reads a reference's label and usage notes so it can
+            write "the red Mustang" instead of inventing a car with no
+            relationship to the art that will actually illustrate it. */}
+        <VisualReferenceDesk projectId={projectId} />
+        <div className="mt-8">
+          <BlueprintPlanner projectId={projectId} />
+        </div>
       </SectionShell>
     );
   }

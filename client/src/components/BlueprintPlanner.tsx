@@ -31,6 +31,8 @@ function Help({ text }: { text: string }) {
 export default function BlueprintPlanner({ projectId }: { projectId: string }) {
   const utils = trpc.useUtils();
   const pagesQuery = trpc.studio.pages.list.useQuery({ projectId });
+  const referencesQuery = trpc.references.list.useQuery({ projectId });
+  const labelledReferenceCount = (referencesQuery.data ?? []).filter((reference) => reference.label.trim()).length;
   const briefQuery = trpc.studio.brief.get.useQuery({ projectId });
   const create = trpc.studio.pages.create.useMutation();
   const update = trpc.studio.pages.update.useMutation();
@@ -228,6 +230,7 @@ export default function BlueprintPlanner({ projectId }: { projectId: string }) {
             <p className="mono text-[10px] uppercase tracking-[0.22em] text-[var(--coral)]">Page planner</p>
             <h2 className="serif mt-2 text-3xl text-[var(--ink)]">Plan the book before making pictures.</h2>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted-ink)]">Create one row per page. Scene direction tells the image model what to show; page text is the words that belong on the finished page. Your saved brief and character bible will be inherited later when you compose a prompt.</p>
+            {labelledReferenceCount > 0 && <p className="mt-2 max-w-2xl text-xs leading-5 text-[#356b63]">AI drafting will write scenes consistent with your {labelledReferenceCount} labelled reference{labelledReferenceCount === 1 ? "" : "s"} above.</p>}
           </div>
           <span className="rounded-full bg-[#e9f2ed] px-3 py-1.5 text-xs font-semibold text-[#356b63]">{pages.length} planned pages</span>
         </div>

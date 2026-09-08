@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { draftCoverCopy, draftStoryAndPages, textTimeoutMs } from "../server/story-drafting";
 import type { BookBriefRecord, PagePlanRecord } from "../server/db-studio";
+import { createDatabase, createProject, upsertUser } from "../server/db";
+import { createAppRouter } from "../server/routers";
+import { uploadReferenceAsset } from "../server/reference-assets";
+import type { PrivateStorage } from "../server/storage";
 
 const env = { FAL_KEY: "test-only", FAL_TEXT_ENDPOINT: "openrouter/router/openai/v1/chat/completions", FAL_TEXT_MODEL: "openai/gpt-4o" };
 const draft = { storySummary: "A kitten learns to ask for help.", pages: [{ pageNumber: 1, pageText: "Milo looked up.", sceneDirection: "An orange kitten looks up beneath a leafy plant." }] };
@@ -67,6 +71,101 @@ describe("AI-assisted story drafting", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new DOMException("aborted", "TimeoutError"));
     await expect(draftStoryAndPages(null, [], 1, env)).rejects.toThrow(/did not respond within 120s.*still be running and billable/s);
     fetchMock.mockRestore();
+  });
+});
+
+describe("uploaded reference art reaches scene drafting", () => {
+  const references = [
+    { label: "Danny's car — a red 1967 Mustang convertible", usageNotes: "Use whenever the car appears; match colour and shape exactly.", referenceKind: "character_sheet" },
+    { label: "Mina's stuffed rabbit", usageNotes: "", referenceKind: "character_sheet" },
+  ];
+
+  it("passes labelled references into the model's context so scenes can name them", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const userMessage = body.messages.find((m: { role: string }) => m.role === "user").content as string;
+      expect(userMessage).toContain("Danny's car — a red 1967 Mustang convertible");
+      expect(userMessage).toContain("Use whenever the car appears; match colour and shape exactly.");
+      expect(userMessage).toContain("Mina's stuffed rabbit");
+      // Instructs the model to reuse a reference's exact wording rather than
+      // inventing an inconsistent version of something already labelled.
+      expect(userMessage).toContain("Reference art has been uploaded");
+      expect(userMessage).toContain("exact same wording");
+      return completion(JSON.stringify(draft));
+    });
+    await draftStoryAndPages(null, [], 1, env, { references });
+    fetchMock.mockRestore();
+  });
+
+  it("says nothing about reference art when none was uploaded", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const userMessage = body.messages.find((m: { role: string }) => m.role === "user").content as string;
+      expect(userMessage).not.toContain("Reference art has been uploaded");
+      expect(userMessage).toContain('"availableReferenceArt":"none uploaded"');
+      return completion(JSON.stringify(draft));
+    });
+    await draftStoryAndPages(null, [], 1, env, { references: [] });
+    await draftStoryAndPages(null, [], 1, env);
+    fetchMock.mockRestore();
+  });
+
+  it("filters out a reference with no label rather than sending an empty description", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const userMessage = body.messages.find((m: { role: string }) => m.role === "user").content as string;
+      expect(userMessage).not.toContain("Reference art has been uploaded");
+      return completion(JSON.stringify(draft));
+    });
+    await draftStoryAndPages(null, [], 1, env, { references: [{ label: "  ", usageNotes: "some notes", referenceKind: "moodboard" }] });
+    fetchMock.mockRestore();
+  });
+
+  it("also reaches a targeted single-page redraft, not just a fresh plan", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const userMessage = body.messages.find((m: { role: string }) => m.role === "user").content as string;
+      expect(userMessage).toContain("Danny's car");
+      expect(userMessage).toContain("Rewrite ONLY page 3");
+      return completion(JSON.stringify({ storySummary: draft.storySummary, pages: [{ pageNumber: 3, pageText: "t", sceneDirection: "d" }] }));
+    });
+    await draftStoryAndPages(null, [{ id: "p1", userId: "u", projectId: "proj", pageNumber: 3, spreadNumber: null, sceneDirection: "old", pageText: "old", approvalState: "draft", rejectionReason: null, status: "draft", createdAt: "", updatedAt: "" } as PagePlanRecord], 5, env, { targetPageNumbers: [3], references });
+    fetchMock.mockRestore();
+  });
+
+  it("the real endpoint an author hits loads references from storage and forwards them, end to end", async () => {
+    // Not the pure function called directly, but the actual tRPC procedure a
+    // click on "Draft story with AI" invokes -- this is what proves the wiring
+    // in routers.ts (list references for the project, map them, pass through)
+    // is correct, not just that draftStoryAndPages itself accepts the option.
+    const owner = { id: "wiring-owner", name: "Owner", email: "owner@example.com" };
+    const db = createDatabase(":memory:");
+    upsertUser(db, owner);
+    const project = createProject(db, owner.id, { id: "wiring-project", name: "Book", brief: "" });
+    const pngBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const storage: PrivateStorage = { put: async (key) => ({ key }), delete: async () => undefined, createAccessUrl: async (key) => `/private/${key}` };
+    await uploadReferenceAsset(db, storage, owner.id, {
+      projectId: project.id, referenceKind: "character_sheet", originalFilename: "car.png",
+      label: "Danny's car — a red 1967 Mustang convertible", usageNotes: "Use whenever the car appears.",
+      declaredMimeType: "image/png", provenanceDeclaration: "user_owned", rightsAttestation: true, bytes: pngBytes,
+    }, { maxBytes: 100_000, maxPixels: 1_000_000, maxDimension: 2_000 });
+
+    const originalEnv = { ...process.env };
+    Object.assign(process.env, env);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const userMessage = body.messages.find((m: { role: string }) => m.role === "user").content as string;
+      expect(userMessage).toContain("Danny's car — a red 1967 Mustang convertible");
+      return completion(JSON.stringify(draft));
+    });
+    try {
+      const router = createAppRouter(db, { storage });
+      const caller = router.createCaller({ db, user: owner });
+      await caller.studio.brief.draftWithAi({ projectId: project.id, pageCount: 1 });
+    } finally {
+      fetchMock.mockRestore();
+      process.env = originalEnv;
+    }
   });
 });
 

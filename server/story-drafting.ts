@@ -121,12 +121,14 @@ async function requestStructuredDraft<T>(prompt: string, schema: z.ZodType<T>, e
   return result.data;
 }
 
+export type ReferenceForDrafting = { label: string; usageNotes: string; referenceKind: string };
+
 export async function draftStoryAndPages(
   brief: BookBriefRecord | null,
   pages: PagePlanRecord[],
   pageCount: number,
   env: NodeJS.ProcessEnv = process.env,
-  options: { targetPageNumbers?: number[]; interiorArtStyle?: string; fetchImpl?: typeof fetch } = {},
+  options: { targetPageNumbers?: number[]; interiorArtStyle?: string; fetchImpl?: typeof fetch; references?: readonly ReferenceForDrafting[] } = {},
 ): Promise<StoryDraft> {
   const endpoint = requiredEnv(env, "FAL_TEXT_ENDPOINT");
   const model = requiredEnv(env, "FAL_TEXT_MODEL");
@@ -134,10 +136,24 @@ export async function draftStoryAndPages(
   if (!config) throw new FalProviderError("FAL is not configured for this deployment.", { classification: "provider_http", retryable: false });
   const safeCount = Math.min(200, Math.max(1, Math.floor(pageCount)));
   const coloringPage = isColoringLineArt(options.interiorArtStyle);
+  /**
+   * This is a text model: it cannot see the uploaded pixels, only what the
+   * author wrote about them. Without this, scene directions were drafted with
+   * no knowledge that reference art existed at all, so a page could invent a
+   * car that looked nothing like the one already uploaded and labelled for
+   * continuity, or skip a labelled character/prop entirely.
+   */
+  const references = (options.references ?? []).filter((reference) => reference.label.trim());
   const context = JSON.stringify({
     brief: brief ? { briefText: brief.briefText, bookType: brief.bookType, audience: brief.audience, visualStyleAnchors: brief.visualStyleAnchors, characterBible: brief.characterBible, propAndSettingBible: brief.propAndSettingBible, negativePrompt: brief.negativePrompt } : null,
     existingPages: pages.map((page) => ({ pageNumber: page.pageNumber, pageText: page.pageText, sceneDirection: page.sceneDirection })),
+    availableReferenceArt: references.length
+      ? references.map((reference) => ({ depicts: reference.label, howToUse: reference.usageNotes || "no usage notes given", kind: reference.referenceKind }))
+      : "none uploaded",
   });
+  const referenceGuidance = references.length
+    ? ` Reference art has been uploaded for this book (see availableReferenceArt in the saved project context). When a scene calls for something a reference depicts, describe it in the sceneDirection using the exact same wording as its "depicts" text, and follow its "howToUse" instruction -- this keeps the drawn page consistent with the reference image that will guide the artwork. Do not invent a conflicting version of anything a reference already depicts (for example, a different car, a different toy, a different outfit) unless the scene explicitly calls for something else. You are not limited to only using labelled references; write whatever the story needs, but stay consistent with what is already labelled.`
+    : "";
   /**
    * A targeted redraft rewrites only the named pages. Without this, adding one
    * page to a finished book re-planned all of it and discarded work the author
@@ -153,8 +169,8 @@ export async function draftStoryAndPages(
     ? ` This is a COLORING BOOK: every sceneDirection must describe a scene that works as black-and-white line art to be coloured in. Describe subjects, poses, arrangement and large open shapes. Do not mention colour, lighting, shadow, mood lighting, texture or painting technique. Each scene must be worth colouring: name the setting and several concrete objects in it (furniture, plants, toys, windows, patterns, background items), not just the character. Keep the objects large and clearly separated. Whenever a page shows an object or place that appears on another page, describe it with exactly the same words you used before so it can be drawn identically.`
     : ` Whenever a page shows an object or place that appears on another page, describe it with exactly the same words you used before so it can be drawn identically.`;
   const prompt = targets.length
-    ? `An existing children's book plan is being extended. Rewrite ONLY page${targets.length === 1 ? "" : "s"} ${targets.join(", ")}. Return JSON only with this shape: {"storySummary":"...","pages":[{"pageNumber":1,"pageText":"...","sceneDirection":"..."}]}, whose "pages" array contains ONLY the rewritten page${targets.length === 1 ? "" : "s"} ${targets.join(", ")} and nothing else. Keep "storySummary" identical to the saved summary. The new page must fit the established characters, tone and continuity of the surrounding pages without contradicting or restating them. Do not request copyrighted characters, trademarks, living artists' styles, or unsafe content. Saved project context: ${context}${styleGuidance}`
-    : `Create a complete original children's book plan with exactly ${safeCount} ordered pages. Return JSON only with this shape: {"storySummary":"...","pages":[{"pageNumber":1,"pageText":"...","sceneDirection":"..."}]}. Each page needs concise pageText and a specific visual sceneDirection. Preserve any non-empty existing page entries. Do not request copyrighted characters, trademarks, living artists' styles, or unsafe content.${styleGuidance} Saved project context: ${context}`;
+    ? `An existing children's book plan is being extended. Rewrite ONLY page${targets.length === 1 ? "" : "s"} ${targets.join(", ")}. Return JSON only with this shape: {"storySummary":"...","pages":[{"pageNumber":1,"pageText":"...","sceneDirection":"..."}]}, whose "pages" array contains ONLY the rewritten page${targets.length === 1 ? "" : "s"} ${targets.join(", ")} and nothing else. Keep "storySummary" identical to the saved summary. The new page must fit the established characters, tone and continuity of the surrounding pages without contradicting or restating them. Do not request copyrighted characters, trademarks, living artists' styles, or unsafe content. Saved project context: ${context}${styleGuidance}${referenceGuidance}`
+    : `Create a complete original children's book plan with exactly ${safeCount} ordered pages. Return JSON only with this shape: {"storySummary":"...","pages":[{"pageNumber":1,"pageText":"...","sceneDirection":"..."}]}. Each page needs concise pageText and a specific visual sceneDirection. Preserve any non-empty existing page entries. Do not request copyrighted characters, trademarks, living artists' styles, or unsafe content.${styleGuidance} Saved project context: ${context}${referenceGuidance}`;
 
   /**
    * The OpenAI-compatible chat-completions endpoint answers synchronously: the
