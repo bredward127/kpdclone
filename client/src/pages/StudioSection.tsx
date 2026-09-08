@@ -13,6 +13,7 @@ import PublishingDesk from "@/components/PublishingDesk";
 import BookBriefEditor from "@/components/BookBriefEditor";
 import BlueprintPlanner from "@/components/BlueprintPlanner";
 import PageBatchBoard from "@/components/PageBatchBoard";
+import ContinuityHeader from "@/components/ContinuityHeader";
 
 const sectionCopy = {
   "book-brief": { eyebrow: "Step 01 / Story", title: "Tell me about your book.", description: "Describe your story, characters, setting, and art style. Use the AI button to fill everything in from a single sentence — then edit to make it yours.", icon: FileText, next: "blueprint", nextLabel: "Set up pages →" },
@@ -69,21 +70,27 @@ export default function StudioSection({ projectId, section }: { projectId: strin
   if (section === "page-studio") {
     return (
       <SectionShell maxWidth="max-w-5xl">
-        <PageBatchBoard
-          projectId={projectId}
-          onOpenPage={(pagePlanId) => {
-            setFocusPagePlanId(pagePlanId);
-            document.getElementById("page-detail")?.scrollIntoView({ behavior: "smooth", block: "start" });
-          }}
-        />
+        {/* Continuity comes first: references and the story bible decide whether
+            every page can be drawn as the same book, so they belong above the
+            generate controls rather than buried below them. */}
+        <ContinuityHeader projectId={projectId} />
+        <div className="mt-8">
+          <VisualReferenceDesk projectId={projectId} />
+        </div>
+        <div className="mt-8">
+          <PageBatchBoard
+            projectId={projectId}
+            onOpenPage={(pagePlanId) => {
+              setFocusPagePlanId(pagePlanId);
+              document.getElementById("page-detail")?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }}
+          />
+        </div>
         <div id="page-detail" className="mt-8 scroll-mt-6">
           <PromptStudio projectId={projectId} focusPagePlanId={focusPagePlanId} />
         </div>
         <div className="mt-8">
           <PageGenerationStudio projectId={projectId} focusPagePlanId={focusPagePlanId} />
-        </div>
-        <div className="mt-8">
-          <VisualReferenceDesk projectId={projectId} />
         </div>
       </SectionShell>
     );

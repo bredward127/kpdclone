@@ -72,8 +72,18 @@ function extractFirstImage(payload: Record<string, unknown>): FalImageOutput {
 export function createFalGenerationService(dependencies: { adapter: GenerationAdapter; storage: PrivateStorage; webhookUrl?: string; maxOutputBytes?: number; validationLimits?: ReturnType<typeof getReferenceValidationLimits>; maxActivePerUser?: number; maxActivePerProject?: number; modelApproval?: (endpointId: string) => boolean }) {
   const maxOutputBytes = dependencies.maxOutputBytes ?? dependencies.validationLimits?.maxBytes ?? getReferenceValidationLimits().maxBytes;
   const validationLimits = dependencies.validationLimits ?? getReferenceValidationLimits();
-  const maxActivePerUser = dependencies.maxActivePerUser ?? 3;
-  const maxActivePerProject = dependencies.maxActivePerProject ?? 2;
+  /**
+   * Generating a whole book is the normal case, so these have to allow a batch
+   * to make progress. The old 3-per-user / 2-per-project ceiling meant a
+   * 24-page book could never be worked in bulk even when every job was healthy.
+   * A deployment can tune them; the cap keeps a runaway loop bounded.
+   */
+  const envLimit = (name: string, fallback: number): number => {
+    const raw = Number(process.env[name]);
+    return Number.isFinite(raw) && raw >= 1 ? Math.min(Math.floor(raw), 50) : fallback;
+  };
+  const maxActivePerUser = dependencies.maxActivePerUser ?? envLimit("FAL_MAX_ACTIVE_PER_USER", 12);
+  const maxActivePerProject = dependencies.maxActivePerProject ?? envLimit("FAL_MAX_ACTIVE_PER_PROJECT", 8);
   /**
    * "Active" must mean the same thing here as it does in the model list the
    * interface reads. listSelectableFalModels() also honours FAL_ACTIVE_ENDPOINTS,
@@ -84,11 +94,70 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
    */
   const modelApproval = dependencies.modelApproval ?? ((endpointId: string) => listSelectableFalModels().some((model) => model.endpointId === endpointId));
 
-  function enforceConcurrency(db: AppDatabase, userId: string, projectId: string): void {
+  function countActive(db: AppDatabase, userId: string, projectId: string): { user: number; project: number } {
     const userActive = db.prepare(`SELECT COUNT(*) AS count FROM generation_jobs WHERE user_id = ? AND local_status IN ('queued', 'in_progress', 'cancellation_requested')`).get(userId) as { count: number };
     const projectActive = db.prepare(`SELECT COUNT(*) AS count FROM generation_jobs WHERE user_id = ? AND project_id = ? AND local_status IN ('queued', 'in_progress', 'cancellation_requested')`).get(userId, projectId) as { count: number };
-    if (userActive.count >= maxActivePerUser) throw new Error(`Per-user generation concurrency limit reached (${maxActivePerUser}). Stop queued work or wait for a job to finish.`);
-    if (projectActive.count >= maxActivePerProject) throw new Error(`Per-project generation concurrency limit reached (${maxActivePerProject}). Stop queued work or wait for a job to finish.`);
+    return { user: userActive.count, project: projectActive.count };
+  }
+
+  /**
+   * Advance every job this user still believes is running by asking FAL what
+   * actually happened to it.
+   *
+   * A job leaves 'queued'/'in_progress' only on a provider webhook, and webhooks
+   * are gated behind FAL_WEBHOOK_ENABLED. A deployment without them (the default)
+   * never completed a single job: finished images were never ingested, so pages
+   * span forever on work FAL had already run and billed, and the active count
+   * never fell, so the concurrency limit locked the account out permanently
+   * after maxActivePerUser submissions. Reconciling on demand makes the
+   * webhook an optimisation rather than a requirement.
+   *
+   * `minAgeMs` keeps a submission made seconds ago from being polled
+   * immediately; pass 0 to check everything regardless of age.
+   */
+  async function reconcileActiveJobs(db: AppDatabase, userId: string, projectId?: string, minAgeMs = 15_000): Promise<{ checked: number; advanced: number }> {
+    const cutoff = new Date(Date.now() - minAgeMs).toISOString();
+    const rows = db.prepare(
+      `SELECT id FROM generation_jobs
+       WHERE user_id = ? ${projectId ? "AND project_id = ?" : ""}
+         AND local_status IN ('queued', 'in_progress', 'cancellation_requested')
+         AND fal_request_id IS NOT NULL
+         AND COALESCE(queued_at, created_at) <= ?
+       ORDER BY COALESCE(queued_at, created_at) ASC LIMIT 25`,
+    ).all(...(projectId ? [userId, projectId, cutoff] : [userId, cutoff])) as Array<{ id: string }>;
+    if (!rows.length) return { checked: 0, advanced: 0 };
+
+    let advanced = 0;
+    for (const row of rows) {
+      const before = getGenerationJobForUser(db, userId, row.id)?.localStatus;
+      try {
+        await reconcile(db, userId, row.id);
+      } catch (error) {
+        // A request FAL no longer knows about can never complete. Settle it as
+        // failed so it stops holding a concurrency slot for good, rather than
+        // leaving it active for a webhook that will never arrive.
+        if (error instanceof FalProviderError && error.classification === "provider_not_found") {
+          setJob(db, userId, row.id, { local_status: "failed", status: "failed", provider_status: "NOT_FOUND", error_classification: "provider_not_found", error_message: "FAL no longer has a record of this request, so it cannot complete.", completed_at: now() });
+        }
+        // Any other failure (provider down, timeout) leaves the job active so a
+        // later sweep can retry it.
+      }
+      if (getGenerationJobForUser(db, userId, row.id)?.localStatus !== before) advanced += 1;
+    }
+    return { checked: rows.length, advanced };
+  }
+
+  async function enforceConcurrency(db: AppDatabase, userId: string, projectId: string): Promise<void> {
+    let active = countActive(db, userId, projectId);
+    if (active.user >= maxActivePerUser || active.project >= maxActivePerProject) {
+      // Before refusing, find out whether the jobs holding these slots are
+      // genuinely still running. Without this a deployment with no webhook is
+      // locked out forever by jobs that finished long ago.
+      await reconcileActiveJobs(db, userId, undefined, 0);
+      active = countActive(db, userId, projectId);
+    }
+    if (active.user >= maxActivePerUser) throw new Error(`Per-user generation concurrency limit reached (${maxActivePerUser}). Wait for a job to finish, or press "Cancel stuck jobs".`);
+    if (active.project >= maxActivePerProject) throw new Error(`Per-project generation concurrency limit reached (${maxActivePerProject}). Wait for a job to finish, or press "Cancel stuck jobs".`);
   }
 
   async function ingestResult(db: AppDatabase, job: { id: string; userId: string; projectId: string; pagePlanId: string | null; promptVersionId: string | null; localStatus: LocalGenerationStatus; webhookProcessedAt: string | null; expectedOutputConstraintsJson?: string; requestKind?: "initial" | "variation" | "prompt_edit"; sourceAssetId?: string | null }, payload: Record<string, unknown>, providerStatus: string): Promise<{ assetId: string; jobId: string; duplicate: boolean }> {
@@ -149,7 +218,7 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
         return { localJobId: saved.id, falRequestId: saved.falRequestId ?? "", status: saved.localStatus, providerStatus: saved.providerStatus ?? "", retryCount: saved.retryCount };
       }
     }
-    enforceConcurrency(db, userId, input.projectId);
+    await enforceConcurrency(db, userId, input.projectId);
     const prompt = getPromptVersionForUser(db, userId, input.promptVersionId);
     if (!prompt || prompt.projectId !== input.projectId || prompt.pagePlanId !== input.pagePlanId) throw new Error("Frozen prompt version not found.");
     if (!modelApproval(input.generationEndpoint)) throw new Error("The selected model configuration is not active and administrator-approved.");
@@ -266,7 +335,7 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
     }
   }
 
-  return { submit, cancel, reconcile, retry, processWebhook, ingestResult };
+  return { submit, cancel, reconcile, reconcileActiveJobs, retry, processWebhook, ingestResult };
 }
 
 export type FalGenerationService = ReturnType<typeof createFalGenerationService>;

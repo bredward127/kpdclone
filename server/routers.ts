@@ -224,6 +224,67 @@ export function createAppRouter(
           try { return freezePromptVersion(db, ctx.user.id, input.promptVersionId); }
           catch { throw new TRPCError({ code: "BAD_REQUEST", message: "This prompt version could not be frozen for generation." }); }
         }),
+        /**
+         * Compose, save and freeze in one call for many pages.
+         *
+         * Doing this a page at a time meant opening each page, composing,
+         * saving, freezing and returning to the board before a single image
+         * could be generated. It also left reference selection to a panel far
+         * down the page, so books were routinely generated with no character
+         * reference attached and no continuity between pages. Every
+         * rights-attested reference in the project is attached here by default,
+         * which is what continuity requires.
+         */
+        prepareForGeneration: protectedProcedure.input(z.object({
+          projectId: z.string().min(1),
+          pagePlanIds: z.array(z.string().min(1)).min(1).max(200),
+          aspectRatio: z.string().trim().regex(/^\d+:\d+$/).optional(),
+          referenceAssetIds: z.array(z.string().min(1)).max(24).optional(),
+          reuseFrozen: z.boolean().default(true),
+        })).mutation(({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          const model = listSelectableFalModels()[0];
+          if (!model) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No reviewed model configuration is active, so prompts cannot be composed." });
+          type SupportedRatio = (typeof model.supportedAspectRatios)[number];
+          const aspectRatio: SupportedRatio = model.supportedAspectRatios.includes(input.aspectRatio as SupportedRatio)
+            ? (input.aspectRatio as SupportedRatio)
+            : model.supportedAspectRatios[0];
+          // Only references the owner has attested rights for can be sent to the
+          // provider, so filter rather than fail the whole batch on one asset.
+          const usable = (input.referenceAssetIds ?? listReferenceAssets(db, ctx.user.id, input.projectId).map((asset) => asset.id))
+            .filter((id) => { try { assertReferenceCanBeUsedForGeneration(db, ctx.user.id, id); return true; } catch { return false; } })
+            .slice(0, 24);
+
+          const prepared: Array<{ pagePlanId: string; promptVersionId: string; version: number }> = [];
+          const skipped: Array<{ pagePlanId: string; reason: string }> = [];
+          for (const pagePlanId of input.pagePlanIds) {
+            try {
+              const page = getPagePlanForUser(db, ctx.user.id, pagePlanId);
+              if (!page || page.projectId !== input.projectId) { skipped.push({ pagePlanId, reason: "Page not found in this book." }); continue; }
+              if (!page.sceneDirection.trim()) { skipped.push({ pagePlanId, reason: `Page ${page.pageNumber} has no scene description yet.` }); continue; }
+              if (input.reuseFrozen) {
+                const already = listPromptVersions(db, ctx.user.id, input.projectId, pagePlanId).find((version) => version.status === "approved");
+                if (already) { prepared.push({ pagePlanId, promptVersionId: already.id, version: already.version }); continue; }
+              }
+              const composed = composePromptFromSavedProject(db, ctx.user.id, {
+                projectId: input.projectId, pagePlanId,
+                generationModel: model.displayName, generationEndpoint: model.endpointId,
+                aspectRatio, referenceAssetIds: usable,
+              });
+              const version = createPromptVersion(db, ctx.user.id, composed, {
+                projectId: input.projectId, pagePlanId,
+                generationModel: model.displayName, generationEndpoint: model.endpointId,
+                aspectRatio, referenceAssetIds: usable,
+              });
+              const frozen = freezePromptVersion(db, ctx.user.id, version.id);
+              recordWorkflowEvent(ctx.user.id, input.projectId, "prompt_version", frozen.id, "prompt_version_created", JSON.stringify({ endpoint: model.endpointId, aspectRatio, bulk: true }));
+              prepared.push({ pagePlanId, promptVersionId: frozen.id, version: frozen.version });
+            } catch (error) {
+              skipped.push({ pagePlanId, reason: error instanceof Error ? error.message : "The prompt could not be composed." });
+            }
+          }
+          return { prepared, skipped, referencesAttached: usable.length, aspectRatio, model: { displayName: model.displayName, endpointId: model.endpointId } };
+        }),
         restore: protectedProcedure.input(z.object({ projectId: z.string().min(1), promptVersionId: z.string().min(1) })).mutation(({ ctx, input }) => {
           const existing = getPromptVersionForUser(db, ctx.user.id, input.promptVersionId);
           if (!existing || existing.projectId !== input.projectId) throw new TRPCError({ code: "NOT_FOUND", message: "Prompt version not found." });
@@ -349,6 +410,18 @@ export function createAppRouter(
           if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
           try { return await generationService.cancel(db, ctx.user.id, input.jobId); }
           catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Generation cancellation could not be requested safely." }); }
+        }),
+        /**
+         * Ask FAL what happened to every job this project still thinks is
+         * running. The interface polls this while any page shows work in
+         * flight, so finished images land and concurrency slots free up even
+         * on a deployment with no webhook configured.
+         */
+        syncActive: protectedProcedure.input(projectIdInput).mutation(async ({ ctx, input }) => {
+          if (!generationService) return { checked: 0, advanced: 0 };
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          try { return await generationService.reconcileActiveJobs(db, ctx.user.id, input.projectId); }
+          catch { return { checked: 0, advanced: 0 }; }
         }),
         cancelAll: protectedProcedure.input(projectIdInput).mutation(async ({ ctx, input }) => {
           if (!generationService) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Generation service is not configured." });
