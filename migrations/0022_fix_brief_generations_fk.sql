@@ -1,4 +1,11 @@
-CREATE TABLE IF NOT EXISTS brief_generations (
+-- 0021 referenced projects(id), a table renamed to book_projects in 0002, so
+-- every insert failed with "no such table: main.projects". Databases that
+-- already recorded 0021 keep the broken table, and no row ever landed in it,
+-- so it is safe to drop and recreate with the composite key the other studio
+-- tables use.
+DROP TABLE IF EXISTS brief_generations;
+
+CREATE TABLE brief_generations (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   project_id TEXT NOT NULL,
