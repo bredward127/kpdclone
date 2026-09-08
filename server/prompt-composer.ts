@@ -225,8 +225,15 @@ export function composePrompt(input: {
   const project = input.source.bookProject;
   const brief = input.source.bookBrief;
   const page = input.source.pagePlan;
+  // Compared positively, never as "not interior": a prompt version frozen
+  // before covers existed carries a page snapshot with no role at all, and
+  // that page is an interior page, not a cover.
+  const coverRole = page?.pageRole === "front_cover" || page?.pageRole === "back_cover" ? page.pageRole : null;
   const references = input.source.approvedReferenceAssets;
-  const coloringPage = isColoringLineArt(project.interiorArtStyle);
+  // A coloring book's *interior* is line art to be coloured in; its cover is
+  // printed in full colour like any other book's, so the line-art rules stop
+  // at the interior.
+  const coloringPage = isColoringLineArt(project.interiorArtStyle) && !coverRole;
   const promptSections = [
     section("BOOK IDENTITY", [`Title: ${project.title || project.name}`, `Author: ${project.author || "Not supplied"}`, `Imprint: ${project.imprint || "Not supplied"}`, `Book type: ${project.bookType}`, `Interior art style: ${coloringPage ? "coloring page (black line art to be coloured in)" : "full colour illustration"}`]),
     section("INTENDED AUDIENCE", [`Audience: ${brief?.audience || "Not supplied"}`, `Reading direction: ${project.readingDirection}`]),
@@ -263,7 +270,21 @@ export function composePrompt(input: {
      * Text is composited over the finished art at export instead, so the model
      * is told to leave room for it and to draw no lettering at all.
      */
-    section("SPECIFIC PAGE SCENE", [`Page ${page?.pageNumber ?? "?"}: ${page?.sceneDirection || "Not supplied"}`]),
+    /**
+     * A cover surface is a page_plans row like any other, so it inherits the
+     * same style anchors, character bible and no-text rule -- what changes is
+     * only how the scene is framed: a single standalone image that has to work
+     * as a shelf thumbnail, with the typography left to the compositor.
+     */
+    coverRole
+      ? section("COVER ARTWORK", [
+          coverRole === "front_cover"
+            ? "This is the FRONT COVER illustration: one standalone image that has to read as a book cover on a shelf and as a thumbnail. Give it a single clear focal subject and a composition that still works when scaled down."
+            : "This is the BACK COVER artwork: a supporting image or background for the same book. Keep the middle and lower area calm and uncluttered, because the blurb and the barcode are composited over it.",
+          `Cover art direction: ${page?.sceneDirection || "Not supplied"}`,
+          "The title, subtitle, author name, imprint, barcode, ISBN and spine lettering are all typeset by the export stage. Draw none of them, and do not leave a banner, ribbon or blank plaque where they would go.",
+        ])
+      : section("SPECIFIC PAGE SCENE", [`Page ${page?.pageNumber ?? "?"}: ${page?.sceneDirection || "Not supplied"}`]),
     section(NO_TEXT_RULE_MARKER, [
       "Draw artwork only. The image must contain no text of any kind: no words, letters, numerals, captions, titles, speech bubbles, labels, signage, handwriting, logos, watermarks or signatures, in any language or script.",
       "The story text for this page is typeset separately after generation, so do not illustrate, letter or transcribe it. Leave the composition uncluttered where the text will sit; do not draw a text box, banner, scroll or placeholder for it.",
@@ -272,7 +293,7 @@ export function composePrompt(input: {
     coloringPage
       ? section("COLORING PAGE LINE ART — BINDING", [...COLORING_PAGE_RULES, `Line-quality anchors carried from the brief: ${brief?.visualStyleAnchors || "Not supplied"}. Apply these to line and shape only; ignore any colour, lighting or painting direction they contain.`])
       : section("VISUAL STYLE", [`${brief?.visualStyleAnchors || "Describe palette, line quality, lighting, texture, and rendering method."}`, `The visual treatment must remain original and consistent with the saved character bible.`]),
-    section("COMPOSITION", [`Spread/page number: ${page?.pageNumber ?? "?"}`, `Composition notes: ${userEdits.compositionNotes || "Keep the focal subject clear with readable silhouette and intentional negative space for the page layout."}`, `Reading direction: ${project.readingDirection}`]),
+    section("COMPOSITION", [coverRole ? `Surface: ${coverRole === "front_cover" ? "front cover" : "back cover"}` : `Spread/page number: ${page?.pageNumber ?? "?"}`, `Composition notes: ${userEdits.compositionNotes || "Keep the focal subject clear with readable silhouette and intentional negative space for the page layout."}`, `Reading direction: ${project.readingDirection}`]),
     section("PRINT-SAFE REQUIREMENTS", [`Trim: ${project.trimWidthInches} × ${project.trimHeightInches} inches`, `Bleed preference: ${project.bleedPreference}`, `Paper: ${project.paperSelection}; ink: ${project.inkSelection}`, `Keep critical characters and details inside the safe area; avoid accidental text, borders, or watermarks.`]),
     section("NEGATIVE CONSTRAINTS", [`${brief?.negativePrompt || "No muddy anatomy, extra limbs, accidental text, logos, watermarks, or cropped focal subjects."}`, coloringPage ? coloringPageNegativePrompt() : "", userEdits.negativePromptAddition]),
     section("MODEL-SPECIFIC PARAMETERS", [`Model: ${input.generationModel}`, `Endpoint: ${input.generationEndpoint}`, `Aspect ratio: ${input.aspectRatio}`, `Seed: ${input.seed ?? "provider default"}`]),

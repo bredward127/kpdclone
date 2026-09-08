@@ -5,7 +5,7 @@ import { z } from "zod";
 import { clearSession } from "./auth";
 import { isFalAdministrator } from "./fal-admin";
 import { getFalConnectionStatus, type FalConnectionStatus } from "./fal";
-import { createBookBrief, createPagePlan, updatePagePlan, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, getGeneratedAssetForUser, getGenerationJobForUser, insertGenerationJob, listAssetVariantsForUser, listAuditEvents, listExportPackages, listGeneratedAssetsForPage, listGenerationJobsForUser, listPagePlans, reviewGeneratedAsset, transitionAssetStatus, transitionGenerationJob, updatePageApproval, deletePagePlan, saveBriefGeneration, listBriefGenerations, listActiveJobIdsForProject } from "./db-studio";
+import { createBookBrief, createPagePlan, updatePagePlan, ensureCoverArtPage, pageRoles, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, getGeneratedAssetForUser, getGenerationJobForUser, insertGenerationJob, listAssetVariantsForUser, listAuditEvents, listExportPackages, listGeneratedAssetsForPage, listGenerationJobsForUser, listPagePlans, reviewGeneratedAsset, transitionAssetStatus, transitionGenerationJob, updatePageApproval, deletePagePlan, saveBriefGeneration, listBriefGenerations, listActiveJobIdsForProject } from "./db-studio";
 import { lifecycleStatuses, pageApprovalStates } from "../shared/studio";
 import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
 import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset, updateReferenceLabel } from "./reference-assets";
@@ -17,7 +17,7 @@ import { getFalQueueClient } from "./fal-queue";
 import { createAuditEvent } from "./db-studio";
 import { falModelRegistry, listSelectableFalModels } from "./fal-models";
 import { getQualityResultForAsset } from "./asset-quality";
-import { createCoverPlanVersion, coverArtPrompt, getLatestCoverPlan, importCoverTemplate, invalidateCoverPlansForInteriorChange, listCoverTemplates, makeInteriorFingerprint, type CoverPlanInput } from "./cover-desk";
+import { createCoverPlanVersion, coverArtPrompt, getLatestCoverPlan, suggestCoverArtDirection, importCoverTemplate, invalidateCoverPlansForInteriorChange, listCoverTemplates, makeInteriorFingerprint, type CoverPlanInput } from "./cover-desk";
 import { assembleInteriorExport, type InteriorFont, type InteriorPageType } from "./interior-pdf";
 import { composeCoverExport, type CoverFont } from "./cover-composer";
 import { activateKdpRuleset, createKdpRulesetDraft, DEFAULT_KDP_RULESET, DEFAULT_KDP_SOURCE_URLS, listKdpRulesets, persistPaperbackPreflight, type KdpRulesetConfig, type PaperbackPreflightInput } from "./kdp-preflight";
@@ -266,6 +266,7 @@ export function createAppRouter(
             const approved = assets.find((asset) => asset.status === "approved") ?? assets[0] ?? null;
             return {
               pagePlanId: page.id,
+              pageRole: page.pageRole,
               pageNumber: page.pageNumber,
               pageText: page.pageText,
               sceneDirection: page.sceneDirection,
@@ -430,9 +431,9 @@ export function createAppRouter(
          * (approved) one exists, and the newest asset. Without this the board
          * would need a prompt query and an asset query per page.
          */
-        board: protectedProcedure.input(projectIdInput).query(async ({ ctx, input }) => {
+        board: protectedProcedure.input(projectIdInput.extend({ pageRole: z.enum(pageRoles).default("interior") })).query(async ({ ctx, input }) => {
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
-          return await Promise.all(listPagePlans(db, ctx.user.id, input.projectId).map(async (page) => {
+          return await Promise.all(listPagePlans(db, ctx.user.id, input.projectId, input.pageRole).map(async (page) => {
             const versions = listPromptVersions(db, ctx.user.id, input.projectId, page.id);
             const approved = versions.find((version) => version.status === "approved") ?? null;
             const latest = versions[0] ?? null;
@@ -628,6 +629,66 @@ export function createAppRouter(
         templates: protectedProcedure.input(projectIdInput).query(({ ctx, input }) => {
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
           return listCoverTemplates(db, ctx.user.id, input.projectId);
+        }),
+        /**
+         * Create or update the page row that holds one cover surface's art.
+         * From here the cover uses the interior's own pipeline unchanged:
+         * prompts.prepareForGeneration freezes it, generationJobs.enqueue
+         * sends it, and pages.board({ pageRole }) reads the image back.
+         */
+        saveArtDirection: protectedProcedure.input(projectIdInput.extend({
+          pageRole: z.enum(["front_cover", "back_cover"]),
+          sceneDirection: z.string().trim().min(1).max(4_000),
+        })).mutation(({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          const page = ensureCoverArtPage(db, ctx.user.id, input.projectId, input.pageRole, input.sceneDirection);
+          recordWorkflowEvent(ctx.user.id, input.projectId, "page_plan", page.id, "cover_art_direction_saved", JSON.stringify({ pageRole: input.pageRole }));
+          return { pagePlanId: page.id, pageRole: page.pageRole, sceneDirection: page.sceneDirection };
+        }),
+        /**
+         * A starting description for a cover surface, assembled from the story
+         * the author already wrote. Deterministic on purpose -- it costs
+         * nothing, and the author edits it before spending anything on art.
+         */
+        suggestArtDirection: protectedProcedure.input(projectIdInput.extend({ pageRole: z.enum(["front_cover", "back_cover"]) })).query(({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          const brief = getBriefForProject(db, ctx.user.id, input.projectId);
+          const plan = getLatestCoverPlan(db, ctx.user.id, input.projectId);
+          return { sceneDirection: suggestCoverArtDirection(input.pageRole, brief, plan?.title ?? null) };
+        }),
+        /**
+         * Everything that can legally be placed on the cover: uploaded
+         * reference art and generated cover art alike. The plan's art
+         * selectors offered only uploads before, so generated cover art could
+         * never be chosen even once it existed.
+         */
+        artChoices: protectedProcedure.input(projectIdInput).query(async ({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          const choices: Array<{ id: string; label: string; kind: "generated" | "reference"; status: string; accessUrl: string }> = [];
+          for (const pageRole of ["front_cover", "back_cover"] as const) {
+            for (const page of listPagePlans(db, ctx.user.id, input.projectId, pageRole)) {
+              for (const asset of listGeneratedAssetsForPage(db, ctx.user.id, input.projectId, page.id)) {
+                choices.push({
+                  id: asset.id,
+                  label: `${pageRole === "front_cover" ? "Generated front-cover art" : "Generated back-cover art"} · ${new Date(asset.createdAt).toLocaleString()}`,
+                  kind: "generated",
+                  status: asset.status,
+                  accessUrl: await storage.createAccessUrl(asset.storageReference, 15 * 60),
+                });
+              }
+            }
+          }
+          for (const reference of listReferenceAssets(db, ctx.user.id, input.projectId)) {
+            if (reference.status !== "active") continue;
+            choices.push({
+              id: reference.id,
+              label: `${reference.label.trim() || reference.originalFilename} (uploaded)`,
+              kind: "reference",
+              status: reference.status,
+              accessUrl: await storage.createAccessUrl(reference.storageKey, 15 * 60),
+            });
+          }
+          return choices;
         }),
         artPrompt: protectedProcedure.input(z.object({ role: z.enum(["front", "back", "decorative"]), brief: z.string().max(2_000).default("") })).query(({ input }) => coverArtPrompt(input.role, input.brief)),
         draftCopyWithAi: protectedProcedure.input(projectIdInput).mutation(async ({ ctx, input }) => {

@@ -89,10 +89,32 @@ function parseCharacters(raw: unknown): StoryCharacter[] {
   }
 }
 
+/**
+ * Which surface of the book a page_plans row stands for. Cover surfaces get a
+ * row of their own so cover art runs through the same compose -> freeze ->
+ * queue -> generate pipeline as an interior page, without appearing in the
+ * interior anywhere.
+ */
+export const pageRoles = ["interior", "front_cover", "back_cover"] as const;
+export type PageRole = (typeof pageRoles)[number];
+
+/**
+ * Reserved page numbers for the cover surfaces. page_plans has a UNIQUE
+ * (user_id, project_id, page_number) constraint declared inside the table, so
+ * it cannot be relaxed without rebuilding a table three others reference;
+ * numbers far beyond any real book keep the covers from colliding with an
+ * interior page instead.
+ */
+export const coverPageNumbers: Record<Exclude<PageRole, "interior">, number> = {
+  front_cover: 900_001,
+  back_cover: 900_002,
+};
+
 export type PagePlanRecord = {
   id: string;
   userId: string;
   projectId: string;
+  pageRole: PageRole;
   pageNumber: number;
   spreadNumber: number | null;
   sceneDirection: string;
@@ -122,19 +144,50 @@ export function getBriefForProject(db: AppDatabase, userId: string, projectId: s
   return { ...rest, characters: parseCharacters(charactersJson) };
 }
 
-export function listPagePlans(db: AppDatabase, userId: string, projectId: string): PagePlanRecord[] {
+/**
+ * The book's pages for one role, interior by default: every caller that means
+ * "the pages of the book" keeps meaning exactly that now covers live in the
+ * same table.
+ */
+export function listPagePlans(db: AppDatabase, userId: string, projectId: string, pageRole: PageRole = "interior"): PagePlanRecord[] {
   return db
     .prepare(
-      `SELECT id, user_id AS userId, project_id AS projectId, page_number AS pageNumber,
+      `SELECT id, user_id AS userId, project_id AS projectId, page_role AS pageRole,
+              page_number AS pageNumber,
               spread_number AS spreadNumber, scene_direction AS sceneDirection,
               page_text AS pageText, approval_state AS approvalState,
               rejection_reason AS rejectionReason, status,
               created_at AS createdAt, updated_at AS updatedAt
        FROM page_plans
-       WHERE user_id = ? AND project_id = ?
+       WHERE user_id = ? AND project_id = ? AND page_role = ?
        ORDER BY page_number ASC`,
     )
-    .all(userId, projectId) as PagePlanRecord[];
+    .all(userId, projectId, pageRole) as PagePlanRecord[];
+}
+
+/**
+ * The row that holds one cover surface's art, created on first use. The
+ * description is what the author wants drawn; everything else about the prompt
+ * (style anchors, character bible, the binding no-text rule) is inherited from
+ * the brief exactly as it is for an interior page.
+ */
+export function ensureCoverArtPage(
+  db: AppDatabase,
+  userId: string,
+  projectId: string,
+  pageRole: Exclude<PageRole, "interior">,
+  sceneDirection: string,
+): PagePlanRecord {
+  const existing = listPagePlans(db, userId, projectId, pageRole)[0];
+  if (existing) return updatePagePlan(db, userId, existing.id, { sceneDirection, pageText: "" }) ?? existing;
+  return createPagePlan(db, userId, {
+    id: crypto.randomUUID(),
+    projectId,
+    pageNumber: coverPageNumbers[pageRole],
+    sceneDirection,
+    pageText: "",
+    pageRole,
+  });
 }
 
 export function updatePageApproval(
@@ -421,7 +474,8 @@ export function getPagePlanForUser(db: AppDatabase, userId: string, pagePlanId: 
   return (
     db
       .prepare(
-        `SELECT id, user_id AS userId, project_id AS projectId, page_number AS pageNumber,
+        `SELECT id, user_id AS userId, project_id AS projectId, page_role AS pageRole,
+                page_number AS pageNumber,
                 spread_number AS spreadNumber, scene_direction AS sceneDirection,
                 page_text AS pageText, approval_state AS approvalState,
                 rejection_reason AS rejectionReason, status,
@@ -435,13 +489,13 @@ export function getPagePlanForUser(db: AppDatabase, userId: string, pagePlanId: 
 export function createPagePlan(
   db: AppDatabase,
   userId: string,
-  input: { id: string; projectId: string; pageNumber: number; spreadNumber?: number; sceneDirection: string; pageText: string },
+  input: { id: string; projectId: string; pageNumber: number; spreadNumber?: number; sceneDirection: string; pageText: string; pageRole?: PageRole },
 ): PagePlanRecord {
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO page_plans (id, user_id, project_id, page_number, spread_number, scene_direction, page_text, created_at, updated_at)
-     VALUES (@id, @userId, @projectId, @pageNumber, @spreadNumber, @sceneDirection, @pageText, @now, @now)`,
-  ).run({ ...input, userId, spreadNumber: input.spreadNumber ?? null, now });
+    `INSERT INTO page_plans (id, user_id, project_id, page_role, page_number, spread_number, scene_direction, page_text, created_at, updated_at)
+     VALUES (@id, @userId, @projectId, @pageRole, @pageNumber, @spreadNumber, @sceneDirection, @pageText, @now, @now)`,
+  ).run({ ...input, userId, pageRole: input.pageRole ?? "interior", spreadNumber: input.spreadNumber ?? null, now });
   return getPagePlanForUser(db, userId, input.id)!;
 }
 

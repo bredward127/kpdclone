@@ -7,6 +7,7 @@ import VisualReferenceDesk from "@/components/VisualReferenceDesk";
 import PromptStudio from "@/components/PromptStudio";
 import PageGenerationStudio from "@/components/PageGenerationStudio";
 import CoverDesk from "@/components/CoverDesk";
+import CoverArtStudio from "@/components/CoverArtStudio";
 import { ValidationDesk } from "@/components/ValidationDesk";
 import ExportCenter from "@/components/ExportCenter";
 import PublishingDesk from "@/components/PublishingDesk";
@@ -134,7 +135,13 @@ export default function StudioSection({ projectId, section }: { projectId: strin
   if (section === "cover-desk") {
     return (
       <SectionShell copy={copy}>
-        <CoverDesk projectId={projectId} />
+        {/* Art before layout: the wrap cannot be planned around artwork that
+            does not exist yet, and until now nothing in the app could make
+            cover art at all. */}
+        <CoverArtStudio projectId={projectId} />
+        <div className="mt-8">
+          <CoverDesk projectId={projectId} />
+        </div>
       </SectionShell>
     );
   }

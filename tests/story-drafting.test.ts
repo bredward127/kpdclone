@@ -298,7 +298,7 @@ describe("AI-assisted cover copy drafting", () => {
     version: 1, status: "draft", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
   };
   const page = (n: number, scene: string): PagePlanRecord => ({
-    id: `page-${n}`, userId: "u1", projectId: "p1", pageNumber: n, spreadNumber: null,
+    id: `page-${n}`, userId: "u1", projectId: "p1", pageRole: "interior", pageNumber: n, spreadNumber: null,
     sceneDirection: scene, pageText: `Text ${n}.`, approvalState: "draft", rejectionReason: null,
     status: "draft", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
   });

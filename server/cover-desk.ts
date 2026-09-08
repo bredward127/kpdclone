@@ -192,3 +192,33 @@ export function listCoverTemplates(db: AppDatabase, userId: string, projectId: s
 function parseCoverPlan(row: Record<string, unknown>): CoverPlanVersion {
   return { id: String(row.id), userId: String(row.user_id), projectId: String(row.project_id), version: Number(row.version), binding: row.binding as "paperback", trimWidthInches: Number(row.trim_width_inches), trimHeightInches: Number(row.trim_height_inches), finalInteriorPageCount: Number(row.final_interior_page_count), paperSelection: String(row.paper_selection), inkSelection: String(row.ink_selection), readingDirection: row.reading_direction as "ltr" | "rtl", title: String(row.title), subtitle: String(row.subtitle), author: String(row.author), imprint: String(row.imprint), backCoverCopy: String(row.back_cover_copy), barcodeDecision: row.barcode_decision as CoverBarcodeDecision, spineTextPermitted: Boolean(row.spine_text_permitted), frontArtAssetId: row.front_art_asset_id ? String(row.front_art_asset_id) : undefined, backArtAssetId: row.back_art_asset_id ? String(row.back_art_asset_id) : undefined, decorativeAssetIds: JSON.parse(String(row.decorative_asset_ids_json ?? "[]")), frontArtPrompt: String(row.front_art_prompt), backArtPrompt: String(row.back_art_prompt), decorativeArtPrompt: String(row.decorative_art_prompt), placement: JSON.parse(String(row.placement_json ?? "{}")), templateImportId: row.template_import_id ? String(row.template_import_id) : null, interiorFingerprint: String(row.interior_fingerprint), inputsConfirmed: Boolean(row.inputs_confirmed), status: row.status as CoverPlanStatus, createdAt: String(row.created_at), updatedAt: String(row.updated_at) };
 }
+
+/**
+ * A starting point for a cover illustration, written from the story that
+ * already exists. Deterministic rather than a model call: the author is about
+ * to pay for the picture, so the words that produce it should cost nothing and
+ * be theirs to edit first.
+ */
+export function suggestCoverArtDirection(
+  pageRole: "front_cover" | "back_cover",
+  brief: { briefText: string; characterBible: string; visualStyleAnchors: string; characters?: Array<{ name: string; description: string }> } | null,
+  title: string | null,
+): string {
+  const lead = brief?.characters?.[0];
+  const subject = lead ? `${lead.name}${lead.description ? ` — ${lead.description}` : ""}` : (brief?.characterBible.split(/(?<=\.)\s/)[0] ?? "").trim();
+  const story = (brief?.briefText ?? "").split(/(?<=\.)\s/).slice(0, 2).join(" ").trim();
+
+  if (pageRole === "front_cover") {
+    return [
+      title ? `A front-cover illustration for "${title}".` : "A front-cover illustration for this book.",
+      subject ? `The focal subject is ${subject}` + (subject.endsWith(".") ? "" : ".") : "",
+      story ? `It should suggest the story at a glance: ${story}` : "",
+      "One clear subject, centred and unobstructed, with calm space around the upper third where the title will be typeset.",
+    ].filter(Boolean).join(" ");
+  }
+  return [
+    "Back-cover artwork for the same book: a quieter companion to the front cover rather than a second scene.",
+    subject ? `It may echo ${subject}` + (subject.endsWith(".") ? "" : ".") : "",
+    "Keep the centre and lower area open and low-contrast, because the blurb and barcode are placed over it.",
+  ].filter(Boolean).join(" ");
+}
