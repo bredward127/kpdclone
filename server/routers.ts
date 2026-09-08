@@ -5,7 +5,7 @@ import { z } from "zod";
 import { clearSession } from "./auth";
 import { isFalAdministrator } from "./fal-admin";
 import { getFalConnectionStatus, type FalConnectionStatus } from "./fal";
-import { createBookBrief, createPagePlan, updatePagePlan, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, getGeneratedAssetForUser, getGenerationJobForUser, insertGenerationJob, listAssetVariantsForUser, listAuditEvents, listExportPackages, listGeneratedAssetsForPage, listGenerationJobsForUser, listPagePlans, reviewGeneratedAsset, transitionAssetStatus, transitionGenerationJob, updatePageApproval, deletePagePlan } from "./db-studio";
+import { createBookBrief, createPagePlan, updatePagePlan, getBriefForProject, getCoverPlanForUser, getLayoutTemplateForUser, getLatestValidationRun, getPagePlanForUser, getGeneratedAssetForUser, getGenerationJobForUser, insertGenerationJob, listAssetVariantsForUser, listAuditEvents, listExportPackages, listGeneratedAssetsForPage, listGenerationJobsForUser, listPagePlans, reviewGeneratedAsset, transitionAssetStatus, transitionGenerationJob, updatePageApproval, deletePagePlan, saveBriefGeneration, listBriefGenerations } from "./db-studio";
 import { lifecycleStatuses, pageApprovalStates } from "../shared/studio";
 import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
 import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset } from "./reference-assets";
@@ -160,11 +160,20 @@ export function createAppRouter(
           enforceLimit(policyLimiter, ctx.user.id, "AI planning");
           const project = getProjectForUser(db, ctx.user.id, input.projectId);
           if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          let draft;
           try {
-            return await draftBookBrief(input.idea, { interiorArtStyle: project.interiorArtStyle, bookType: project.bookType, env: process.env });
+            draft = await draftBookBrief(input.idea, { interiorArtStyle: project.interiorArtStyle, bookType: project.bookType, env: process.env });
           } catch (error) {
             throw new TRPCError({ code: "PRECONDITION_FAILED", message: error instanceof Error ? error.message : "The brief could not be drafted." });
           }
+          saveBriefGeneration(db, ctx.user.id, input.projectId, input.idea, draft);
+          return draft;
+        }),
+        listGenerations: protectedProcedure.input(projectIdInput).query(({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          }
+          return listBriefGenerations(db, ctx.user.id, input.projectId);
         }),
         draftWithAi: protectedProcedure.input(projectIdInput.extend({ pageCount: z.number().int().positive().max(200), pageNumbers: z.array(z.number().int().positive()).max(200).optional() })).mutation(async ({ ctx, input }) => {
           enforceLimit(policyLimiter, ctx.user.id, "AI planning");
