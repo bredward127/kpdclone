@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { draftCoverCopy, draftStoryAndPages, textTimeoutMs } from "../server/story-drafting";
+import { draftBookBrief, draftCoverCopy, draftStoryAndPages, textTimeoutMs } from "../server/story-drafting";
 import type { BookBriefRecord, PagePlanRecord } from "../server/db-studio";
 import { createDatabase, createProject, upsertUser } from "../server/db";
 import { createAppRouter } from "../server/routers";
@@ -162,6 +162,88 @@ describe("uploaded reference art reaches scene drafting", () => {
       const router = createAppRouter(db, { storage });
       const caller = router.createCaller({ db, user: owner });
       await caller.studio.brief.draftWithAi({ projectId: project.id, pageCount: 1 });
+    } finally {
+      fetchMock.mockRestore();
+      process.env = originalEnv;
+    }
+  });
+});
+
+describe("uploaded reference art reaches brief drafting", () => {
+  const references = [
+    { label: "Danny's car — a red 1967 Mustang convertible", usageNotes: "Use whenever the car appears; match colour and shape exactly.", referenceKind: "character_sheet" },
+  ];
+
+  it("tells the model to reuse a reference's exact wording in the character/prop bible, not invent a different description", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const userMessage = body.messages.find((m: { role: string }) => m.role === "user").content as string;
+      expect(userMessage).toContain("Danny's car — a red 1967 Mustang convertible");
+      expect(userMessage).toContain("Use whenever the car appears; match colour and shape exactly.");
+      expect(userMessage).toContain("Reference art has already been uploaded");
+      expect(userMessage).toContain("EXACT wording");
+      return completion(JSON.stringify({
+        briefText: "A story about Danny and his car.",
+        audience: "ages 4-8",
+        visualStyleAnchors: "Warm gouache.",
+        characterBible: "Danny's car — a red 1967 Mustang convertible.",
+        propAndSettingBible: "The garage.",
+        negativePrompt: "No logos.",
+      }));
+    });
+    const result = await draftBookBrief("A boy and his car have an adventure.", { env, references });
+    expect(result.characterBible).toContain("Danny's car — a red 1967 Mustang convertible");
+    fetchMock.mockRestore();
+  });
+
+  it("says nothing about reference art when none was uploaded", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const userMessage = body.messages.find((m: { role: string }) => m.role === "user").content as string;
+      expect(userMessage).not.toContain("Reference art has already been uploaded");
+      return completion(JSON.stringify({ briefText: "A story.", audience: "4-8", visualStyleAnchors: "Ink.", characterBible: "A fox.", propAndSettingBible: "A den.", negativePrompt: "No logos." }));
+    });
+    await draftBookBrief("A fox learns to share.", { env, references: [] });
+    await draftBookBrief("A fox learns to share.", { env });
+    fetchMock.mockRestore();
+  });
+
+  it("filters out a reference with no label", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const userMessage = body.messages.find((m: { role: string }) => m.role === "user").content as string;
+      expect(userMessage).not.toContain("Reference art has already been uploaded");
+      return completion(JSON.stringify({ briefText: "A story.", audience: "4-8", visualStyleAnchors: "Ink.", characterBible: "A fox.", propAndSettingBible: "A den.", negativePrompt: "No logos." }));
+    });
+    await draftBookBrief("A fox learns to share.", { env, references: [{ label: "   ", usageNotes: "", referenceKind: "moodboard" }] });
+    fetchMock.mockRestore();
+  });
+
+  it("the real endpoint an author hits loads references from storage and forwards them, end to end", async () => {
+    const owner = { id: "brief-wiring-owner", name: "Owner", email: "owner@example.com" };
+    const db = createDatabase(":memory:");
+    upsertUser(db, owner);
+    const project = createProject(db, owner.id, { id: "brief-wiring-project", name: "Book", brief: "" });
+    const pngBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const storage: PrivateStorage = { put: async (key) => ({ key }), delete: async () => undefined, createAccessUrl: async (key) => `/private/${key}` };
+    await uploadReferenceAsset(db, storage, owner.id, {
+      projectId: project.id, referenceKind: "character_sheet", originalFilename: "car.png",
+      label: "Danny's car — a red 1967 Mustang convertible", usageNotes: "Use whenever the car appears.",
+      declaredMimeType: "image/png", provenanceDeclaration: "user_owned", rightsAttestation: true, bytes: pngBytes,
+    }, { maxBytes: 100_000, maxPixels: 1_000_000, maxDimension: 2_000 });
+
+    const originalEnv = { ...process.env };
+    Object.assign(process.env, env);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const userMessage = body.messages.find((m: { role: string }) => m.role === "user").content as string;
+      expect(userMessage).toContain("Danny's car — a red 1967 Mustang convertible");
+      return completion(JSON.stringify({ briefText: "A story.", audience: "4-8", visualStyleAnchors: "Ink.", characterBible: "A fox.", propAndSettingBible: "A den.", negativePrompt: "No logos." }));
+    });
+    try {
+      const router = createAppRouter(db, { storage });
+      const caller = router.createCaller({ db, user: owner });
+      await caller.studio.brief.draftBriefWithAi({ projectId: project.id, idea: "A boy and his car have an adventure." });
     } finally {
       fetchMock.mockRestore();
       process.env = originalEnv;

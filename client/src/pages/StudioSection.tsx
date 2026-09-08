@@ -56,7 +56,15 @@ export default function StudioSection({ projectId, section }: { projectId: strin
   if (section === "book-brief") {
     return (
       <SectionShell>
-        <BookBriefEditor projectId={projectId} />
+        {/* Reference art belongs above the AI fill button, not after it: the
+            character bible and prop bible are inherited verbatim into every
+            page prompt, so a reference's label has to exist before "Fill
+            with AI" writes those fields, not be uploaded afterward to a brief
+            that already invented a conflicting description. */}
+        <VisualReferenceDesk projectId={projectId} />
+        <div className="mt-8">
+          <BookBriefEditor projectId={projectId} />
+        </div>
       </SectionShell>
     );
   }

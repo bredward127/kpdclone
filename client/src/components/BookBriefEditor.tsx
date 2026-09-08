@@ -28,6 +28,8 @@ export default function BookBriefEditor({ projectId }: { projectId: string }) {
   const updateProject = trpc.project.update.useMutation();
   const utils = trpc.useUtils();
   const coloringBook = project.data?.interiorArtStyle === "coloring_line_art";
+  const referencesQuery = trpc.references.list.useQuery({ projectId });
+  const labelledReferenceCount = (referencesQuery.data ?? []).filter((reference) => reference.label.trim()).length;
   const [idea, setIdea] = useState("");
   const [form, setForm] = useState<FormState>(emptyForm);
   const [dirty, setDirty] = useState(false);
@@ -98,6 +100,11 @@ export default function BookBriefEditor({ projectId }: { projectId: string }) {
           <div className="flex-1">
             <p className="font-semibold text-[var(--ink)]">Let AI write your story details</p>
             <p className="mt-1 text-sm text-[var(--muted-ink)]">Describe your book idea in one sentence. The AI fills in the characters, setting, art style, and everything else. You can edit anything after.</p>
+            {labelledReferenceCount > 0 ? (
+              <p className="mt-1.5 text-xs font-medium text-[#356b63]">Using {labelledReferenceCount} labelled reference{labelledReferenceCount === 1 ? "" : "s"} above — the character and prop details will reuse their exact wording.</p>
+            ) : (
+              <p className="mt-1.5 text-xs text-[var(--muted-ink)]">Have reference art? Upload and label it above first, so the character and prop details match it instead of inventing something different.</p>
+            )}
           </div>
           <span className="shrink-0 rounded-full bg-[#e9f2ed] px-2.5 py-1 text-[10px] font-semibold text-[#356b63]">{dirty ? "Unsaved" : brief.data ? `v${brief.data.version} saved` : "New"}</span>
         </div>

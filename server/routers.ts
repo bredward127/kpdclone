@@ -170,7 +170,12 @@ export function createAppRouter(
           if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
           let draft;
           try {
-            draft = await draftBookBrief(input.idea, { interiorArtStyle: project.interiorArtStyle, bookType: project.bookType, env: process.env });
+            // The character bible and prop bible are inherited verbatim into
+            // every page prompt, so if reference art was uploaded first, its
+            // label has to survive into these fields unchanged rather than
+            // being redescribed differently.
+            const references = listReferenceAssets(db, ctx.user.id, input.projectId).map((reference) => ({ label: reference.label, usageNotes: reference.usageNotes, referenceKind: reference.referenceKind }));
+            draft = await draftBookBrief(input.idea, { interiorArtStyle: project.interiorArtStyle, bookType: project.bookType, env: process.env, references });
           } catch (error) {
             throw new TRPCError({ code: "PRECONDITION_FAILED", message: error instanceof Error ? error.message : "The brief could not be drafted." });
           }

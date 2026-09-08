@@ -268,13 +268,25 @@ export type BriefDraft = z.infer<typeof briefDraftSchema>;
  */
 export async function draftBookBrief(
   idea: string,
-  options: { interiorArtStyle?: string; bookType?: string; env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {},
+  options: { interiorArtStyle?: string; bookType?: string; env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch; references?: readonly ReferenceForDrafting[] } = {},
 ): Promise<BriefDraft> {
   const env = options.env ?? process.env;
   const coloringPage = isColoringLineArt(options.interiorArtStyle);
   const styleRule = coloringPage
     ? `This is a COLORING BOOK. visualStyleAnchors must describe line quality only -- stroke weight, shape language, how enclosed the shapes are, how much of the page is filled -- and must not mention colour, palette, lighting, shading or painting media.`
     : `visualStyleAnchors should describe palette, line quality, lighting and rendering method.`;
+  /**
+   * The brief is the foundation every page prompt inherits: characterBible and
+   * propAndSettingBible are repeated verbatim into every page. If reference
+   * art was uploaded first, its label is the ONE description that has to
+   * survive into these fields unchanged -- inventing a different description
+   * of the same car or character here guarantees every page conflicts with
+   * the picture that is supposed to guide it.
+   */
+  const references = (options.references ?? []).filter((reference) => reference.label.trim());
+  const referenceContext = references.length
+    ? `\n\nReference art has already been uploaded for this book:\n${references.map((reference) => `- ${reference.label}${reference.usageNotes ? ` (${reference.usageNotes})` : ""}`).join("\n")}\n\nUse this EXACT wording for anything the references depict. If a reference is a character, its entry in characterBible must reuse its label text rather than inventing a different description of the same character. If a reference is a recurring object or setting, its entry in propAndSettingBible must reuse its label text the same way. Do not contradict, restyle or add conflicting detail to something a reference already describes.`
+    : "";
   const prompt = `Write the creative brief for a children's ${coloringPage ? "coloring book" : "picture book"}${options.bookType ? ` (${options.bookType})` : ""} from this idea: "${idea}".
 
 Return JSON only, with exactly these six keys. Every value MUST be a plain string — never a nested object or array.
@@ -288,7 +300,7 @@ Return JSON only, with exactly these six keys. Every value MUST be a plain strin
 - propAndSettingBible: a single block of text describing every object and location that will appear on more than one page, each described concretely enough to be redrawn identically: shape, size, material, colour, and where it sits. Be specific; this text is repeated into every page prompt. Include at least four items.
 - negativePrompt: a single block of text listing what must never appear, including copyrighted characters, trademarks, living artists' styles and readable text.
 
-Everything must be original. Do not name copyrighted characters, trademarks or living artists.`;
+Everything must be original. Do not name copyrighted characters, trademarks or living artists.${referenceContext}`;
   return await requestStructuredDraft(prompt, briefDraftSchema, env, options.fetchImpl);
 }
 
