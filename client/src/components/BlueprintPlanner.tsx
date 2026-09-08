@@ -29,6 +29,7 @@ function Help({ text }: { text: string }) {
 }
 
 export default function BlueprintPlanner({ projectId }: { projectId: string }) {
+  const utils = trpc.useUtils();
   const pagesQuery = trpc.studio.pages.list.useQuery({ projectId });
   const briefQuery = trpc.studio.brief.get.useQuery({ projectId });
   const create = trpc.studio.pages.create.useMutation();
@@ -125,7 +126,13 @@ export default function BlueprintPlanner({ projectId }: { projectId: string }) {
       const result = await draftWithAi.mutateAsync({ projectId, pageCount: Math.min(200, Math.max(1, Number(pageCount) || 24)) });
       setStoryDraft({ storySummary: result.storySummary, pages: result.pages });
       setDraftSelection(result.pages.map((draftPage) => draftPage.pageNumber));
-      report(`Draft ready: ${result.pages.length} page directions. Tick the ones you want, then apply. Nothing has been saved yet.`);
+      const shortfall = "shortfall" in result ? Number(result.shortfall ?? 0) : 0;
+      report(
+        shortfall > 0
+          ? `Draft ready, but only ${result.pages.length} of the ${result.requestedPageCount ?? "requested"} pages came back — the model's reply was cut short. Apply these, then raise the count and draft again to fill in the rest.`
+          : `Draft ready: ${result.pages.length} page directions. Tick the ones you want, then apply. Nothing has been saved yet.`,
+        shortfall > 0 ? "error" : "info",
+      );
     } catch (error) {
       report(error instanceof Error ? error.message : "AI-assisted planning is not configured.", "error");
     } finally {
@@ -142,11 +149,13 @@ export default function BlueprintPlanner({ projectId }: { projectId: string }) {
         await removePage.mutateAsync({ projectId, pagePlanId: page.id });
         done += 1;
       }
-      await pagesQuery.refetch();
+      // The Create step reads a separate board query; without invalidating it
+      // deleted pages kept appearing there with their old scene directions.
+      await Promise.all([utils.studio.pages.board.invalidate({ projectId }), pagesQuery.refetch()]);
       setPageSelection([]);
       report(`${done} page${done === 1 ? "" : "s"} deleted. Prompt and image history for ${done === 1 ? "it" : "them"} is kept.`);
     } catch (error) {
-      await pagesQuery.refetch();
+      await Promise.all([utils.studio.pages.board.invalidate({ projectId }), pagesQuery.refetch()]);
       report(`Stopped after ${done} of ${targets.length}: ${error instanceof Error ? error.message : "a page could not be deleted."}`, "error");
     }
   };

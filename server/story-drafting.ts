@@ -6,7 +6,11 @@ import { FalProviderError, describeProviderBody } from "./fal-queue";
 
 const draftPageSchema = z.object({ pageNumber: z.number().int().positive(), pageText: z.string().max(10_000), sceneDirection: z.string().max(10_000) });
 const storyDraftSchema = z.object({ storySummary: z.string().min(1).max(20_000), pages: z.array(draftPageSchema).min(1).max(200) });
-export type StoryDraft = z.infer<typeof storyDraftSchema>;
+/**
+ * `shortfall` reports pages the model was asked for but did not return, so the
+ * interface can say so rather than presenting a truncated plan as complete.
+ */
+export type StoryDraft = z.infer<typeof storyDraftSchema> & { requestedPageCount?: number; shortfall?: number };
 
 type FalTextResult = { output?: unknown; choices?: Array<{ message?: { content?: unknown } }> };
 
@@ -168,7 +172,14 @@ export async function draftStoryAndPages(
     response = await fetchImpl(url, {
       method: "POST",
       headers: { Authorization: `Key ${config.apiKey}`, Accept: "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify({ model, messages: [{ role: "system", content: "You are a children's book planning assistant. Produce original, age-appropriate story plans and visual directions." }, { role: "user", content: prompt }], temperature: 0.7, stream: false }),
+      /**
+       * Without an explicit max_tokens the provider applies its own default —
+       * commonly 4096 — which silently truncates the JSON partway through the
+       * page array. A 52-page request came back with 33 pages and no error,
+       * because the truncated text still parsed as valid JSON once the fence
+       * was stripped. Budget per page and ask for enough room for all of them.
+       */
+      body: JSON.stringify({ model, messages: [{ role: "system", content: "You are a children's book planning assistant. Produce original, age-appropriate story plans and visual directions." }, { role: "user", content: prompt }], temperature: 0.7, stream: false, max_tokens: Math.min(120_000, 2_000 + safeCount * 320) }),
       signal: AbortSignal.timeout(timeout),
     });
   } catch {
@@ -199,7 +210,16 @@ export async function draftStoryAndPages(
   if (!result.success) {
     throw new Error(`FAL text drafting returned JSON that does not match the required story shape: ${result.error.issues.slice(0, 3).map((issue) => `${issue.path.join(".") || "(root)"} ${issue.message}`).join("; ")}`);
   }
-  if (!targets.length) return result.data;
+  if (!targets.length) {
+    /**
+     * A truncated reply still parses, so a short page array is otherwise
+     * indistinguishable from a complete one and the missing pages are lost
+     * silently. Say so, and keep what did arrive so the work is not wasted.
+     */
+    const unique = new Map(result.data.pages.map((entry) => [entry.pageNumber, entry]));
+    const ordered = [...unique.values()].sort((a, b) => a.pageNumber - b.pageNumber);
+    return { storySummary: result.data.storySummary, pages: ordered, requestedPageCount: safeCount, shortfall: Math.max(0, safeCount - ordered.length) };
+  }
   // Keep only the pages that were asked for, so a stray extra page in the reply
   // cannot overwrite work elsewhere in the book.
   const wanted = new Set(targets);

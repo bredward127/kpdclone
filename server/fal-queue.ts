@@ -61,6 +61,19 @@ function endpointPath(base: string, endpoint: string, suffix: string): string {
   return `${base}/${endpoint.replace(/^\/+|\/+$/g, "")}${suffix}`;
 }
 
+/**
+ * Status, response and cancel live under the application, not under a model's
+ * sub-route: an endpoint like "fal-ai/flux/schnell" is submitted to in full but
+ * polled at "fal-ai/flux/requests/{id}/status". Appending the sub-path to the
+ * full endpoint produced a URL FAL answers 405 Method Not Allowed on, so a job
+ * could never be polled, cancelled or collected -- it stayed active forever and
+ * held its concurrency slot.
+ */
+export function queueRequestPath(base: string, endpoint: string, suffix: string): string {
+  const segments = endpoint.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+  return `${base}/${segments.slice(0, 2).join("/")}${suffix}`;
+}
+
 function safeJson(text: string): Record<string, unknown> {
   try {
     const value = JSON.parse(text) as unknown;
@@ -138,17 +151,17 @@ export function createFalQueueClient(config: FalConfig, dependencies: QueueDepen
       return { requestId, gatewayRequestId: typeof body.gateway_request_id === "string" ? body.gateway_request_id : null, responseUrl: typeof body.response_url === "string" ? body.response_url : null, statusUrl: typeof body.status_url === "string" ? body.status_url : null, cancelUrl: typeof body.cancel_url === "string" ? body.cancel_url : null };
     },
     async status(endpoint: string, requestId: string): Promise<FalStatusResponse> {
-      const { body } = await request(endpointPath(config.queueBaseUrl, endpoint, `/requests/${encodeURIComponent(requestId)}/status`), { method: "GET", headers: headers() });
+      const { body } = await request(queueRequestPath(config.queueBaseUrl, endpoint, `/requests/${encodeURIComponent(requestId)}/status`), { method: "GET", headers: headers() });
       if (body.status !== "IN_QUEUE" && body.status !== "IN_PROGRESS" && body.status !== "COMPLETED") throw new FalProviderError("FAL returned an invalid queue status.", { classification: "provider_invalid_response", retryable: false });
       return { status: body.status, requestId, responseUrl: typeof body.response_url === "string" ? body.response_url : undefined, queuePosition: typeof body.queue_position === "number" ? body.queue_position : undefined, error: typeof body.error === "string" ? body.error : undefined, errorType: typeof body.error_type === "string" ? body.error_type : undefined };
     },
     async result(endpoint: string, requestId: string): Promise<Record<string, unknown>> {
-      const { body } = await request(endpointPath(config.queueBaseUrl, endpoint, `/requests/${encodeURIComponent(requestId)}/response`), { method: "GET", headers: headers() });
+      const { body } = await request(queueRequestPath(config.queueBaseUrl, endpoint, `/requests/${encodeURIComponent(requestId)}/response`), { method: "GET", headers: headers() });
       return body;
     },
     async cancel(endpoint: string, requestId: string): Promise<"cancellation_requested" | "already_completed" | "not_found"> {
       try {
-        const { body } = await request(endpointPath(config.queueBaseUrl, endpoint, `/requests/${encodeURIComponent(requestId)}/cancel`), { method: "POST", headers: headers(), body: "{}" });
+        const { body } = await request(queueRequestPath(config.queueBaseUrl, endpoint, `/requests/${encodeURIComponent(requestId)}/cancel`), { method: "POST", headers: headers(), body: "{}" });
         return body.status === "ALREADY_COMPLETED" ? "already_completed" : "cancellation_requested";
       } catch (error) {
         if (error instanceof FalProviderError && error.classification === "provider_not_found") return "not_found";

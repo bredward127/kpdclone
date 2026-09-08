@@ -233,7 +233,20 @@ export function composePrompt(input: {
       `Any object or location named above must appear with the same shape, proportions, materials, colour and placement every time it is drawn, on every page of this book. Do not redesign, restyle or re-colour a recurring item to suit this page's composition. If this page shows such an item, draw the version described above, not a new one.`,
     ]),
     section("CHARACTER/SETTING CONTINUITY", [`Character bible: ${brief?.characterBible || "Not supplied"}`, `Visual-style anchors carried into continuity: ${brief?.visualStyleAnchors || "Not supplied"}`, `Approved reference assets: ${references.length ? references.map((reference) => `${reference.referenceKind} — ${reference.originalFilename} (${reference.id})`).join("; ") : "None"}`]),
-    section("SPECIFIC PAGE SCENE", [`Page ${page?.pageNumber ?? "?"}: ${page?.sceneDirection || "Not supplied"}`, `Page text: ${page?.pageText || "No text supplied"}`]),
+    /**
+     * The page's story text is deliberately NOT sent to the image model.
+     * Passing it as "Page text: ..." made the model render those words into the
+     * artwork: every page came back with baked-in lettering that cannot be
+     * corrected, translated or re-typeset, and which no print layout can use.
+     * Text is composited over the finished art at export instead, so the model
+     * is told to leave room for it and to draw no lettering at all.
+     */
+    section("SPECIFIC PAGE SCENE", [`Page ${page?.pageNumber ?? "?"}: ${page?.sceneDirection || "Not supplied"}`]),
+    section("NO TEXT IN THE IMAGE — BINDING", [
+      "Draw artwork only. The image must contain no text of any kind: no words, letters, numerals, captions, titles, speech bubbles, labels, signage, handwriting, logos, watermarks or signatures, in any language or script.",
+      "The story text for this page is typeset separately after generation, so do not illustrate, letter or transcribe it. Leave the composition uncluttered where the text will sit; do not draw a text box, banner, scroll or placeholder for it.",
+      "Objects that would normally carry writing — books, signs, packaging — must be drawn blank or with purely decorative, non-letterform marks.",
+    ]),
     coloringPage
       ? section("COLORING PAGE LINE ART — BINDING", [...COLORING_PAGE_RULES, `Line-quality anchors carried from the brief: ${brief?.visualStyleAnchors || "Not supplied"}. Apply these to line and shape only; ignore any colour, lighting or painting direction they contain.`])
       : section("VISUAL STYLE", [`${brief?.visualStyleAnchors || "Describe palette, line quality, lighting, texture, and rendering method."}`, `The visual treatment must remain original and consistent with the saved character bible.`]),
@@ -243,7 +256,13 @@ export function composePrompt(input: {
     section("MODEL-SPECIFIC PARAMETERS", [`Model: ${input.generationModel}`, `Endpoint: ${input.generationEndpoint}`, `Aspect ratio: ${input.aspectRatio}`, `Seed: ${input.seed ?? "provider default"}`]),
   ];
   const prompt = [...promptSections, userEdits.promptAddition ? section("USER EDITS — VERBATIM", [userEdits.promptAddition]) : ""].filter(Boolean).join("\n\n");
-  const negativePrompt = [clean(brief?.negativePrompt), coloringPage ? coloringPageNegativePrompt() : "", userEdits.negativePromptAddition].filter(Boolean).join("\n");
+  /**
+   * Always negate lettering, whatever the author wrote in their own negative
+   * prompt. Story text is typeset over the art at export, so any text the model
+   * draws is unusable and cannot be removed from a finished image.
+   */
+  const NO_TEXT_NEGATIVE = "text, words, letters, lettering, numerals, typography, caption, title, subtitle, speech bubble, dialogue balloon, label, sign, signage, banner, handwriting, calligraphy, watermark, signature, logo, gibberish text, garbled letters";
+  const negativePrompt = [clean(brief?.negativePrompt), NO_TEXT_NEGATIVE, coloringPage ? coloringPageNegativePrompt() : "", userEdits.negativePromptAddition].filter(Boolean).join("\n");
   const lintWarnings = lintPrompt({ project, brief, pagePlan: page, userEdits, requestedReferenceAssetIds: input.source.requestedReferenceAssetIds, approvedReferenceAssetIds: references.map((reference) => reference.id), prompt, negativePrompt });
   const resultWithoutHash = { prompt, negativePrompt, sourceFieldSnapshot: input.source, userEdits, generationModel: input.generationModel, generationEndpoint: input.generationEndpoint, aspectRatio: input.aspectRatio, seed: input.seed ?? null, referenceAssetIds: references.map((reference) => reference.id), lintWarnings };
   return { ...resultWithoutHash, contentHashSha256: hashPrompt(resultWithoutHash) };
