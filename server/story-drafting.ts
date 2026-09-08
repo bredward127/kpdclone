@@ -275,3 +275,50 @@ Return JSON only, with exactly these six keys. Every value MUST be a plain strin
 Everything must be original. Do not name copyrighted characters, trademarks or living artists.`;
   return await requestStructuredDraft(prompt, briefDraftSchema, env, options.fetchImpl);
 }
+
+const coverCopyDraftSchema = z.object({
+  title: z.preprocess(coerceToString, z.string().min(1).max(300)),
+  subtitle: z.preprocess(coerceToString, z.string().max(300)),
+  backCoverCopy: z.preprocess(coerceToString, z.string().min(1).max(2_000)),
+});
+export type CoverCopyDraft = z.infer<typeof coverCopyDraftSchema>;
+
+/**
+ * Draft the marketing copy that goes on the cover -- title, subtitle, and the
+ * back-cover blurb -- from the story already saved for this book. Author name
+ * and imprint are deliberately not drafted here: those are the creator's own
+ * identity and business name, not something a model should invent for them.
+ *
+ * There is no persisted "story summary" to read: draftStoryAndPages() returns
+ * one, but it is never saved. Context comes instead from the saved brief plus
+ * a short sample of page scene directions, so a long book does not blow up
+ * the prompt.
+ */
+export async function draftCoverCopy(
+  brief: BookBriefRecord | null,
+  pages: PagePlanRecord[],
+  options: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {},
+): Promise<CoverCopyDraft> {
+  const env = options.env ?? process.env;
+  const ordered = [...pages].sort((a, b) => a.pageNumber - b.pageNumber);
+  const sample = ordered.length <= 6 ? ordered : [...ordered.slice(0, 4), ordered[ordered.length - 1]];
+  const context = JSON.stringify({
+    briefText: brief?.briefText ?? "",
+    audience: brief?.audience ?? "",
+    characterBible: brief?.characterBible ?? "",
+    pageCount: ordered.length,
+    sampleScenes: sample.map((page) => ({ pageNumber: page.pageNumber, sceneDirection: page.sceneDirection })),
+  });
+  const prompt = `Write the front-cover and back-cover copy for a children's book from its saved story context: ${context}
+
+Return JSON only, with exactly these three keys. Every value MUST be a plain string.
+
+{"title":"...","subtitle":"...","backCoverCopy":"..."}
+
+- title: a short, memorable book title (under 8 words). Original -- do not reuse an existing published title.
+- subtitle: an optional short line that clarifies or adds intrigue to the title. Return an empty string if the title stands alone.
+- backCoverCopy: 2-4 short sentences a parent or gift-buyer would read on the back cover -- warm, inviting, hints at the story without spoiling the ending. No age range, no price, no author name, no publisher boilerplate.
+
+Do not name copyrighted characters, trademarks or living artists.`;
+  return await requestStructuredDraft(prompt, coverCopyDraftSchema, env, options.fetchImpl);
+}

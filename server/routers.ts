@@ -10,7 +10,7 @@ import { lifecycleStatuses, pageApprovalStates } from "../shared/studio";
 import { createLocalPrivateStorage, type PrivateStorage } from "./storage";
 import { deleteReferenceAssetForUser, getReferenceAssetForUser, listReferenceAssets, referenceKinds, provenanceDeclarations, assertReferenceCanBeUsedForGeneration, uploadReferenceAsset } from "./reference-assets";
 import { getReferenceValidationLimits } from "./reference-validation";
-import { draftBookBrief, draftStoryAndPages } from "./story-drafting";
+import { draftBookBrief, draftCoverCopy, draftStoryAndPages } from "./story-drafting";
 import { composePromptFromSavedProject, createPromptVersion, freezePromptVersion, getPromptVersionForUser, listPromptVersions, restorePromptVersion, NO_TEXT_RULE_MARKER } from "./prompt-composer";
 import { createFalGenerationService, type FalGenerationService } from "./fal-generation";
 import { getFalQueueClient } from "./fal-queue";
@@ -620,6 +620,15 @@ export function createAppRouter(
           return listCoverTemplates(db, ctx.user.id, input.projectId);
         }),
         artPrompt: protectedProcedure.input(z.object({ role: z.enum(["front", "back", "decorative"]), brief: z.string().max(2_000).default("") })).query(({ input }) => coverArtPrompt(input.role, input.brief)),
+        draftCopyWithAi: protectedProcedure.input(projectIdInput).mutation(async ({ ctx, input }) => {
+          enforceLimit(policyLimiter, ctx.user.id, "AI planning");
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          const brief = getBriefForProject(db, ctx.user.id, input.projectId);
+          const pages = listPagePlans(db, ctx.user.id, input.projectId);
+          if (!brief && !pages.length) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Write your story on the Story step first, so there is something to draft cover copy from." });
+          try { return await draftCoverCopy(brief, pages, { env: process.env }); }
+          catch (error) { throw new TRPCError({ code: "PRECONDITION_FAILED", message: error instanceof Error ? error.message : "Cover copy could not be drafted." }); }
+        }),
         save: protectedProcedure.input(projectIdInput.extend({
           binding: z.literal("paperback"), trimWidthInches: z.number().positive(), trimHeightInches: z.number().positive(), finalInteriorPageCount: z.number().int().positive(), paperSelection: z.string().min(1).max(100), inkSelection: z.string().min(1).max(100), readingDirection: z.enum(["ltr", "rtl"]), title: z.string().max(500), subtitle: z.string().max(500).default(""), author: z.string().max(500), imprint: z.string().max(500).default(""), backCoverCopy: z.string().max(10_000).default(""), barcodeDecision: z.enum(["amazon_placed", "creator_supplied"]), spineTextPermitted: z.boolean(), frontArtAssetId: z.string().min(1).optional(), backArtAssetId: z.string().min(1).optional(), decorativeAssetIds: z.array(z.string().min(1)).max(24).default([]), placement: z.record(z.string(), z.unknown()).default({}), templateImportId: z.string().min(1).optional(), inputsConfirmed: z.boolean().default(false),
         })).mutation(({ ctx, input }) => {

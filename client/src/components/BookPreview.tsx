@@ -55,15 +55,15 @@ export default function BookPreview({ projectId }: { projectId: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [pages.length]);
 
-  if (preview.isLoading) return <LoadingState label="Building your book preview" />;
-  if (preview.isError) return <ErrorState message="The preview could not be loaded." />;
-  if (!preview.data || !layout) return <ErrorState message="This book could not be previewed." />;
-  if (!pages.length) return <div className="rounded-[24px] border border-dashed border-[#c7d0d0] bg-[#fbfaf4] p-12 text-center"><p className="serif text-2xl text-[var(--ink)]">No pages to preview yet.</p><p className="mt-2 text-sm text-[var(--muted-ink)]">Plan your pages and generate artwork first.</p></div>;
-
-  const { trim } = preview.data;
-  const effective = resolveLayout(layout, scope === "page" && page ? overrides[page.pagePlanId] : undefined);
-  const choice = fontChoice(effective.fontId);
-  const { fontWeight, fontStyle } = cssFontStyle(effective.fontId);
+  // Every hook below runs on every render, loading state included: a hook
+  // called only after data arrives changes the hook count between renders,
+  // which crashes the whole page rather than the component ("Rendered more
+  // hooks than during the previous render"). Values that depend on data not
+  // being loaded yet fall back to safe defaults instead of skipping the hook.
+  const trim = preview.data?.trim ?? { widthInches: 8.5, heightInches: 8.5 };
+  const effective = layout ? resolveLayout(layout, scope === "page" && page ? overrides[page.pagePlanId] : undefined) : null;
+  const choice = fontChoice(effective?.fontId ?? "times_roman");
+  const { fontWeight, fontStyle } = cssFontStyle(effective?.fontId ?? "times_roman");
 
   /** Apply an edit to the book default, or to just this page. */
   const change = (patch: Partial<TextLayout>) => {
@@ -107,9 +107,9 @@ export default function BookPreview({ projectId }: { projectId: string }) {
 
   // Percentages so the mock-up scales with its container while keeping the
   // real page proportions and the real text position.
-  const rect = textBlockRect(effective, trim.widthInches, trim.heightInches);
-  const overlay = isOverlay(effective.placement);
-  const artHeightPct = (imageHeightInches(effective, trim.heightInches) / trim.heightInches) * 100;
+  const rect = effective ? textBlockRect(effective, trim.widthInches, trim.heightInches) : { x: 0, y: 0, width: trim.widthInches, height: 0 };
+  const overlay = effective ? isOverlay(effective.placement) : false;
+  const artHeightPct = effective ? (imageHeightInches(effective, trim.heightInches) / trim.heightInches) * 100 : 100;
   const textPct = {
     left: (rect.x / trim.widthInches) * 100,
     width: (rect.width / trim.widthInches) * 100,
@@ -120,17 +120,22 @@ export default function BookPreview({ projectId }: { projectId: string }) {
   // point sizes shown here are proportional to the printed size.
   const pageWidthPx = 460;
   const pxPerInch = pageWidthPx / trim.widthInches;
-  const previewFontPx = (effective.fontSize / 72) * pxPerInch;
+  const previewFontPx = ((effective?.fontSize ?? 18) / 72) * pxPerInch;
 
   const overflowRisk = useMemo(() => {
-    if (!page?.pageText) return false;
+    if (!effective || !page?.pageText) return false;
     // Rough check: characters that fit the band at this size and measure.
     const charsPerLine = Math.max(8, (rect.width * 72) / (effective.fontSize * 0.5));
     const lines = Math.ceil(page.pageText.length / charsPerLine);
     return lines * effective.fontSize * effective.lineHeight > rect.height * 72;
-  }, [page?.pageText, rect.width, rect.height, effective.fontSize, effective.lineHeight]);
+  }, [effective, page?.pageText, rect.width, rect.height]);
 
   const overridden = Boolean(page && overrides[page.pagePlanId]);
+
+  if (preview.isLoading) return <LoadingState label="Building your book preview" />;
+  if (preview.isError) return <ErrorState message="The preview could not be loaded." />;
+  if (!preview.data || !layout || !effective) return <ErrorState message="This book could not be previewed." />;
+  if (!pages.length) return <div className="rounded-[24px] border border-dashed border-[#c7d0d0] bg-[#fbfaf4] p-12 text-center"><p className="serif text-2xl text-[var(--ink)]">No pages to preview yet.</p><p className="mt-2 text-sm text-[var(--muted-ink)]">Plan your pages and generate artwork first.</p></div>;
 
   return (
     <section className="space-y-5">
