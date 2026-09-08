@@ -49,47 +49,108 @@ export default function BookBriefEditor({ projectId }: { projectId: string }) {
   useEffect(() => { if (brief.data) { setForm({ briefText: brief.data.briefText, bookType: brief.data.bookType, audience: brief.data.audience, visualStyleAnchors: brief.data.visualStyleAnchors, characterBible: brief.data.characterBible, propAndSettingBible: brief.data.propAndSettingBible ?? "", negativePrompt: brief.data.negativePrompt }); setDirty(false); } }, [brief.data]);
   const update = (key: keyof FormState, value: string) => { setForm((current) => ({ ...current, [key]: value })); setDirty(true); setNotice(""); };
   const saveDraft = () => { setNotice(""); save.mutate({ projectId, ...form }, { onSuccess: (result) => { setDirty(false); setNotice(`Draft version ${result.version} saved securely at ${new Date(result.updatedAt).toLocaleTimeString()}.`); }, onError: (error) => setNotice(error.message) }); };
-  if (brief.isLoading) return <p className="rounded-2xl bg-[#fbfaf5] p-6 text-sm text-[var(--muted-ink)]">Loading your saved brief…</p>;
-  if (brief.isError) return <p className="rounded-2xl bg-[#fff0eb] p-6 text-sm text-[#7f433a]">Your brief could not be loaded. Refresh before entering more work.</p>;
-  return <section className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5 shadow-[0_8px_30px_rgba(24,43,58,.06)] md:p-7"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="mono text-[10px] uppercase tracking-[0.22em] text-[var(--coral)]">Book memory</p><h2 className="serif mt-2 text-3xl text-[var(--ink)]">Save the decisions once.</h2><p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted-ink)]">This brief becomes the creative memory inherited by your blueprint, page prompts, cover, and validation. Save a draft before leaving the page; each save creates a recoverable server version.</p></div><span className="rounded-full bg-[#e9f2ed] px-3 py-1.5 text-xs font-semibold text-[#356b63]">{dirty ? "Unsaved changes" : brief.data ? `Saved version ${brief.data.version}` : "New brief"}</span></div><fieldset className="mt-7 rounded-2xl border border-[var(--line)] bg-[#fbfaf5] p-4">
-      <legend className="mono px-2 text-[10px] uppercase tracking-[0.16em] text-[var(--muted-ink)]">Interior art style</legend>
-      <div className="grid gap-3 md:grid-cols-2">
-        {([["full_color", "Full colour illustration", "Finished, coloured artwork on every interior page."], ["coloring_line_art", "Coloring book pages", "Black line art with enclosed shapes and open white interiors, made to be coloured in."]] as const).map(([value, label, description]) => (
-          <label key={value} className={`flex cursor-pointer gap-3 rounded-xl border p-3 ${(value === "coloring_line_art") === coloringBook ? "border-[var(--navy)] bg-[var(--paper-strong)]" : "border-[var(--line)] bg-transparent"}`}>
-            <input type="radio" name="interiorArtStyle" checked={(value === "coloring_line_art") === coloringBook} onChange={() => setInteriorArtStyle(value)} disabled={updateProject.isPending || project.isLoading} className="mt-1 h-4 w-4 accent-[#203348]" />
-            <span className="min-w-0">
-              <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--ink)]">{value === "coloring_line_art" ? <PenLine size={14} /> : null}{label}</span>
-              <span className="mt-1 block text-xs leading-5 text-[var(--muted-ink)]">{description}</span>
-            </span>
+  if (brief.isLoading) return <p className="rounded-2xl bg-[#fbfaf5] p-6 text-sm text-[var(--muted-ink)]">Loading your story details…</p>;
+  if (brief.isError) return <p className="rounded-2xl bg-[#fff0eb] p-6 text-sm text-[#7f433a]">Your story details could not be loaded. Try refreshing the page.</p>;
+  return (
+    <section className="space-y-5">
+
+      {/* AI Quick Fill — hero action */}
+      <div className="rounded-[24px] border-2 border-[var(--coral)] bg-[#fff8f5] p-5 md:p-6">
+        <div className="flex items-start gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--coral)] text-white"><Sparkles size={17} /></span>
+          <div className="flex-1">
+            <p className="font-semibold text-[var(--ink)]">Let AI write your story details</p>
+            <p className="mt-1 text-sm text-[var(--muted-ink)]">Describe your book idea in one sentence. The AI fills in the characters, setting, art style, and everything else. You can edit anything after.</p>
+          </div>
+          <span className="shrink-0 rounded-full bg-[#e9f2ed] px-2.5 py-1 text-[10px] font-semibold text-[#356b63]">{dirty ? "Unsaved" : brief.data ? `v${brief.data.version} saved` : "New"}</span>
+        </div>
+        <div className="mt-4 flex flex-wrap items-end gap-3">
+          <label className="min-w-[220px] flex-1 text-sm font-semibold text-[var(--ink)]">
+            <span className="sr-only">Your idea</span>
+            <input
+              value={idea}
+              onChange={(event) => setIdea(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); fillWithAi(); } }}
+              placeholder="A shy raccoon who learns to ask for help, in a moonlit forest…"
+              className="field mt-1"
+            />
           </label>
-        ))}
+          <button
+            type="button"
+            onClick={fillWithAi}
+            disabled={draftBrief.isPending}
+            className="inline-flex shrink-0 items-center gap-2 rounded-full bg-[var(--coral)] px-5 py-3 text-sm font-semibold text-white hover:bg-[#c95d4d] disabled:opacity-50"
+          >
+            {draftBrief.isPending ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+            {draftBrief.isPending ? "Writing…" : "Fill with AI"}
+          </button>
+        </div>
       </div>
-    </fieldset>
-    <fieldset className="mt-5 rounded-2xl border border-[var(--line)] bg-[#fbfaf5] p-4">
-      <legend className="mono px-2 text-[10px] uppercase tracking-[0.16em] text-[var(--muted-ink)]">Image quality &amp; cost</legend>
-      <p className="text-xs leading-5 text-[var(--muted-ink)]">The provider bills by quality tier. Line art carries no gradients or lighting, so the low tier produces the same drawing for a fraction of the price. Change this only if a page genuinely needs it.</p>
-      <div className="mt-3 grid gap-2 sm:grid-cols-3">
-        {([["low", "Low", "About $0.009 per image. Recommended for coloring pages."], ["medium", "Medium", "About $0.034 per image."], ["high", "High", "About $0.133 per image. Rarely needed for line art."]] as const).map(([value, label, description]) => (
-          <label key={value} className={`flex cursor-pointer gap-2 rounded-xl border p-3 ${(project.data?.imageQuality ?? "low") === value ? "border-[var(--navy)] bg-[var(--paper-strong)]" : "border-[var(--line)]"}`}>
-            <input type="radio" name="imageQuality" checked={(project.data?.imageQuality ?? "low") === value} onChange={() => updateProject.mutate({ projectId, imageQuality: value }, { onSuccess: async () => { await Promise.all([utils.project.get.invalidate({ projectId }), project.refetch()]); setNotice(`Image quality set to ${label.toLowerCase()}.`); }, onError: (error) => setNotice(error.message) })} disabled={updateProject.isPending || project.isLoading} className="mt-0.5 h-4 w-4 accent-[#203348]" />
-            <span className="min-w-0"><span className="block text-sm font-semibold text-[var(--ink)]">{label}</span><span className="mt-0.5 block text-[11px] leading-4 text-[var(--muted-ink)]">{description}</span></span>
-          </label>
-        ))}
+
+      {/* Book type */}
+      <div className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5 md:p-6">
+        <p className="text-sm font-semibold text-[var(--ink)]">What kind of book is this?</p>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          {([["full_color", "Story book", "Full-colour illustrated pages — great for picture books and bedtime stories."], ["coloring_line_art", "Coloring book", "Black line art on every page, ready to be coloured in."]] as const).map(([value, label, description]) => (
+            <label key={value} className={`flex cursor-pointer gap-3 rounded-xl border p-3 ${(value === "coloring_line_art") === coloringBook ? "border-[var(--navy)] bg-[#eef4f7]" : "border-[var(--line)] bg-transparent hover:border-[#ccc5b3]"}`}>
+              <input type="radio" name="interiorArtStyle" checked={(value === "coloring_line_art") === coloringBook} onChange={() => setInteriorArtStyle(value)} disabled={updateProject.isPending || project.isLoading} className="mt-1 h-4 w-4 accent-[#203348]" />
+              <span className="min-w-0">
+                <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--ink)]">{value === "coloring_line_art" ? <PenLine size={14} /> : null}{label}</span>
+                <span className="mt-0.5 block text-xs leading-5 text-[var(--muted-ink)]">{description}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+
+        <p className="mt-5 text-sm font-semibold text-[var(--ink)]">Image quality</p>
+        <p className="mt-0.5 text-xs text-[var(--muted-ink)]">Higher quality = better-looking images but costs more per page. Coloring books look great on Low.</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          {([["low", "Low — ~$0.009/image", "Best for coloring books."], ["medium", "Medium — ~$0.034/image", "Good for picture books."], ["high", "High — ~$0.133/image", "For detailed illustration."]] as const).map(([value, label, description]) => (
+            <label key={value} className={`flex cursor-pointer gap-2 rounded-xl border p-3 ${(project.data?.imageQuality ?? "low") === value ? "border-[var(--navy)] bg-[#eef4f7]" : "border-[var(--line)] hover:border-[#ccc5b3]"}`}>
+              <input type="radio" name="imageQuality" checked={(project.data?.imageQuality ?? "low") === value} onChange={() => updateProject.mutate({ projectId, imageQuality: value }, { onSuccess: async () => { await Promise.all([utils.project.get.invalidate({ projectId }), project.refetch()]); setNotice(`Quality set to ${label.split("—")[0].trim().toLowerCase()}.`); }, onError: (error) => setNotice(error.message) })} disabled={updateProject.isPending || project.isLoading} className="mt-0.5 h-4 w-4 accent-[#203348]" />
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-[var(--ink)]">{label}</span>
+                <span className="mt-0.5 block text-[11px] leading-4 text-[var(--muted-ink)]">{description}</span>
+              </span>
+            </label>
+          ))}
+        </div>
       </div>
-    </fieldset>
-    <div className="mt-5 rounded-2xl border border-[#d5c09a] bg-[#fff8e7] p-4">
-      <p className="text-sm font-semibold text-[var(--ink)]">Don't want to fill this in by hand?</p>
-      <p className="mt-1 text-xs leading-5 text-[var(--muted-ink)]">Describe the book in a sentence and the AI writes every field below, including the recurring props and settings that keep objects from changing between pages. Nothing is saved until you press Save.</p>
-      <div className="mt-3 flex flex-wrap items-end gap-3">
-        <label className="min-w-[260px] flex-1 text-xs font-semibold text-[var(--ink)]">
-          <span>Your idea in one sentence</span>
-          <input value={idea} onChange={(event) => setIdea(event.target.value)} placeholder="A shy raccoon who learns to ask for help, in a moonlit forest" className="field mt-2" />
-        </label>
-        <button type="button" onClick={fillWithAi} disabled={draftBrief.isPending} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-50">
-          {draftBrief.isPending ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-          {draftBrief.isPending ? "Writing the brief…" : "Fill every field with AI"}
-        </button>
+
+      {/* Story fields */}
+      <div className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5 md:p-6">
+        <p className="text-sm font-semibold text-[var(--ink)]">Story details</p>
+        <p className="mt-1 text-xs text-[var(--muted-ink)]">These details are remembered across every page so your images stay consistent. Use AI to fill them all at once, or write them yourself.</p>
+        <div className="mt-5 grid gap-5 md:grid-cols-2">
+          {fields.map(([key, label, help, placeholder]) => (
+            <label
+              key={key}
+              className={`${key === "briefText" || key === "visualStyleAnchors" || key === "characterBible" || key === "propAndSettingBible" || key === "negativePrompt" ? "md:col-span-2" : ""} block text-sm font-semibold text-[var(--ink)]`}
+            >
+              <span className="inline-flex items-center">{label}<Help text={help} /></span>
+              {key === "bookType" || key === "audience"
+                ? <input value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2" />
+                : <textarea value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2 min-h-28" rows={key === "briefText" ? 5 : 4} />
+              }
+            </label>
+          ))}
+        </div>
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={saveDraft}
+            disabled={save.isPending || !dirty}
+            className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Save size={16} />{save.isPending ? "Saving…" : "Save"}
+          </button>
+          {!dirty && brief.data
+            ? <span className="inline-flex items-center gap-2 text-sm text-[#356b63]"><CheckCircle2 size={15} />Saved</span>
+            : <span className="text-xs text-[var(--muted-ink)]">Changes are not saved until you press Save.</span>
+          }
+          {notice ? <p className="w-full text-sm text-[#356b63]" role="status">{notice}</p> : null}
+        </div>
       </div>
-    </div>
-    <div className="mt-5 grid gap-5 md:grid-cols-2">{fields.map(([key, label, help, placeholder]) => <label key={key} className={`${key === "briefText" || key === "visualStyleAnchors" || key === "characterBible" || key === "propAndSettingBible" || key === "negativePrompt" ? "md:col-span-2" : ""} block text-sm font-semibold text-[var(--ink)]`}><span className="inline-flex items-center">{label}<Help text={help} /></span>{key === "bookType" || key === "audience" ? <input value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2" /> : <textarea value={form[key]} placeholder={placeholder} onChange={(event) => update(key, event.target.value)} className="field mt-2 min-h-28" rows={key === "briefText" ? 5 : 4} />}</label>)}</div><div className="mt-6 flex flex-wrap items-center gap-3"><button type="button" onClick={saveDraft} disabled={save.isPending || !dirty} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"><Save size={16} />{save.isPending ? "Saving draft…" : "Save draft"}</button>{!dirty && brief.data ? <span className="inline-flex items-center gap-2 text-sm text-[#356b63]"><CheckCircle2 size={16} />Saved on the server</span> : <span className="text-xs text-[var(--muted-ink)]">Your changes are not durable until you save.</span>}{notice ? <p className="w-full text-sm text-[#356b63]" role="status">{notice}</p> : null}</div></section>;
+    </section>
+  );
 }

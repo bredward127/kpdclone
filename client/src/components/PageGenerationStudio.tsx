@@ -50,10 +50,10 @@ export default function PageGenerationStudio({ projectId, focusPagePlanId = "" }
   }, [pages.data, selectedPageId, focusPagePlanId]);
 
   const selectedPage = pages.data?.find((page) => page.id === selectedPageId) ?? null;
-  const prompts = trpc.studio.prompts.list.useQuery({ projectId, pagePlanId: selectedPageId }, { enabled: Boolean(selectedPageId) });
+  const prompts = trpc.studio.prompts.list.useQuery({ projectId, pagePlanId: selectedPageId }, { enabled: Boolean(selectedPageId), placeholderData: (prev) => prev });
   const selectedPrompt = prompts.data?.[0] ?? null;
   const approvedPrompt = prompts.data?.find((prompt) => prompt.status === "approved") ?? null;
-  const generation = trpc.studio.generationJobs.list.useQuery({ projectId, pagePlanId: selectedPageId }, { enabled: Boolean(selectedPageId), refetchInterval: 5_000 });
+  const generation = trpc.studio.generationJobs.list.useQuery({ projectId, pagePlanId: selectedPageId }, { enabled: Boolean(selectedPageId), refetchInterval: 5_000, placeholderData: (prev) => prev });
   const activeModel = models.data?.find((model) => model.endpointId === selectedModelId) ?? models.data?.[0] ?? null;
   const latestAsset = generation.data?.assets?.[0] ?? null;
   const approvedAsset = generation.data?.assets?.find((asset) => asset.status === "approved") ?? null;

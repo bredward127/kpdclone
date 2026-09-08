@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowLeft, ArrowRight, CheckCircle2, CircleDashed, FileText, Image, Layers3, Ruler, ShieldCheck } from "lucide-react";
+import { ArrowRight, CheckCircle2, FileText, Image, Layers3, Ruler, ShieldCheck } from "lucide-react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
@@ -15,12 +15,12 @@ import BlueprintPlanner from "@/components/BlueprintPlanner";
 import PageBatchBoard from "@/components/PageBatchBoard";
 
 const sectionCopy = {
-  "book-brief": { eyebrow: "02 / Book brief", title: "Begin with the feeling.", description: "Capture the heart of the story, its reader, and the visual language you want to carry through every page.", icon: FileText, next: "blueprint", nextLabel: "Shape the blueprint" },
-  blueprint: { eyebrow: "03 / Blueprint", title: "Give the story a spine.", description: "Map the arc, pacing, page beats, and illustration moments before any asset work begins.", icon: Layers3, next: "page-studio", nextLabel: "Open page studio" },
-  "page-studio": { eyebrow: "04 / Page studio", title: "One page at a time.", description: "This is where approved page moments will become individual interior illustrations. Generation stays bounded and reviewable.", icon: Image, next: "cover-desk", nextLabel: "Plan the cover" },
-  "cover-desk": { eyebrow: "05 / Cover desk", title: "Wrap the promise.", description: "Build a structured cover plan around separate artwork, imported KDP template bounds, and deterministic final typography.", icon: Ruler, next: "validation", nextLabel: "Review validation" },
-  validation: { eyebrow: "06 / Validation", title: "Make it ready to leave.", description: "A versioned preflight pass checks the interior, full-wrap cover, dimensions, approvals, and package manifest before export.", icon: ShieldCheck, next: "exports", nextLabel: "View exports" },
-  exports: { eyebrow: "07 / Exports", title: "Take it to the shelf.", description: "Create a private, immutable package from a confirmed version and a blocking-free validation run.", icon: CheckCircle2, next: "book-brief", nextLabel: "Return to brief" },
+  "book-brief": { eyebrow: "Step 01 / Story", title: "Tell me about your book.", description: "Describe your story, characters, setting, and art style. Use the AI button to fill everything in from a single sentence — then edit to make it yours.", icon: FileText, next: "blueprint", nextLabel: "Set up pages →" },
+  blueprint: { eyebrow: "Step 02 / Pages", title: "Plan your pages.", description: "Choose how many pages your book has and write a short scene description and story text for each one. The AI can draft the whole page list from your story summary.", icon: Layers3, next: "page-studio", nextLabel: "Start creating →" },
+  "page-studio": { eyebrow: "Step 03 / Create", title: "Generate your artwork.", description: "Generate images for each page. You can do them one at a time or queue up several at once. Review each image and approve the ones you like before moving on.", icon: Image, next: "cover-desk", nextLabel: "Design your cover →" },
+  "cover-desk": { eyebrow: "Step 04 / Cover", title: "Design your cover.", description: "Build your front cover, back cover, and spine. Upload your artwork and place your title and author name within the KDP safe zones.", icon: Ruler, next: "exports", nextLabel: "Export your book →" },
+  validation: { eyebrow: "Preflight check", title: "Final check.", description: "Run a preflight pass to make sure all pages are approved, dimensions are correct, and the package is ready to export.", icon: ShieldCheck, next: "exports", nextLabel: "Export →" },
+  exports: { eyebrow: "Step 05 / Export", title: "Export your book.", description: "Package your approved interior pages and cover into print-ready files for Amazon KDP. Each export is a private, versioned snapshot.", icon: CheckCircle2, next: "book-brief", nextLabel: "← Back to story" },
 } as const;
 
 type SectionKey = keyof typeof sectionCopy;
@@ -30,63 +30,45 @@ export default function StudioSection({ projectId, section }: { projectId: strin
   // Which page the board handed off to the composer and generation desk below.
   const [focusPagePlanId, setFocusPagePlanId] = useState("");
   const copy = sectionCopy[section];
-  const Icon = copy.icon;
 
   if (project.isLoading) return <LoadingState label="Loading project workspace" />;
   if (project.isError) return <ErrorState message="This project is unavailable or does not belong to your account." />;
   if (!project.data) return <ErrorState message="This project could not be found." />;
 
-  if (section === "cover-desk") {
+  function SectionShell({ maxWidth = "max-w-6xl", children }: { maxWidth?: string; children: React.ReactNode }) {
     return (
-      <div className="mx-auto max-w-6xl">
-        <div className="mb-7 flex items-center justify-between gap-4"><Link href="/projects" className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--muted-ink)] hover:text-[var(--ink)]"><ArrowLeft size={15} /> All projects</Link><span className="mono rounded-full bg-[#e9f2ed] px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-[#517b68]">Draft workspace</span></div>
-        <header className="mb-9 grid gap-7 border-b border-[var(--line)] pb-10 md:grid-cols-[1fr_280px] md:items-end"><div><p className="mono mb-3 text-[10px] uppercase tracking-[0.24em] text-[var(--coral)]">{copy.eyebrow}</p><h1 className="serif max-w-2xl text-5xl leading-[1.04] text-[var(--ink)] md:text-6xl">{copy.title}</h1><p className="mt-5 max-w-xl text-sm leading-6 text-[var(--muted-ink)]">{copy.description}</p></div><div className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5"><p className="mono text-[9px] uppercase tracking-[0.18em] text-[var(--muted-ink)]">Active book</p><p className="mt-2 truncate text-sm font-semibold text-[var(--ink)]">{project.data.name}</p></div></header>
-        <CoverDesk projectId={projectId} />
+      <div className={`mx-auto ${maxWidth}`}>
+        <div className="mb-8 flex items-start gap-4">
+          <div>
+            <p className="mono text-[10px] uppercase tracking-[0.24em] text-[var(--coral)]">{copy.eyebrow}</p>
+            <h1 className="serif mt-1 text-4xl leading-tight text-[var(--ink)] md:text-5xl">{copy.title}</h1>
+            <p className="mt-3 max-w-xl text-sm leading-6 text-[var(--muted-ink)]">{copy.description}</p>
+          </div>
+        </div>
+        {children}
       </div>
     );
   }
 
   if (section === "book-brief") {
     return (
-      <div className="mx-auto max-w-6xl">
-        <div className="mb-7 flex items-center justify-between gap-4"><Link href="/projects" className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--muted-ink)] hover:text-[var(--ink)]"><ArrowLeft size={15} /> All projects</Link><span className="mono rounded-full bg-[#e9f2ed] px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-[#517b68]">Book memory station</span></div>
+      <SectionShell>
         <BookBriefEditor projectId={projectId} />
-      </div>
+      </SectionShell>
     );
   }
 
   if (section === "blueprint") {
     return (
-      <div className="mx-auto max-w-6xl">
-        <div className="mb-7 flex items-center justify-between gap-4"><Link href="/projects" className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--muted-ink)] hover:text-[var(--ink)]"><ArrowLeft size={15} /> All projects</Link><span className="mono rounded-full bg-[#e9f2ed] px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-[#517b68]">Page planning station</span></div>
+      <SectionShell>
         <BlueprintPlanner projectId={projectId} />
-      </div>
-    );
-  }
-
-  if (section === "validation") {
-    return (
-      <div className="mx-auto max-w-6xl">
-        <div className="mb-7 flex items-center justify-between gap-4"><Link href="/projects" className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--muted-ink)] hover:text-[var(--ink)]"><ArrowLeft size={15} /> All projects</Link><span className="mono rounded-full bg-[#e9f2ed] px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-[#517b68]">Preflight station</span></div>
-        <ValidationDesk projectId={projectId} />
-      </div>
-    );
-  }
-
-  if (section === "exports") {
-    return (
-      <div className="mx-auto max-w-6xl">
-        <div className="mb-7 flex items-center justify-between gap-4"><Link href="/projects" className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--muted-ink)] hover:text-[var(--ink)]"><ArrowLeft size={15} /> All projects</Link><span className="mono rounded-full bg-[#e9f2ed] px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-[#517b68]">Private export station</span></div>
-        <ExportCenter projectId={projectId} />
-      </div>
+      </SectionShell>
     );
   }
 
   if (section === "page-studio") {
     return (
-      <div className="mx-auto max-w-5xl">
-        <div className="mb-7 flex items-center justify-between gap-4"><Link href="/projects" className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--muted-ink)] hover:text-[var(--ink)]"><ArrowLeft size={15} /> All projects</Link><span className="mono rounded-full bg-[#e9f2ed] px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-[#517b68]">Draft workspace</span></div>
-        <header className="mb-9 grid gap-7 border-b border-[var(--line)] pb-10 md:grid-cols-[1fr_280px] md:items-end"><div><p className="mono mb-3 text-[10px] uppercase tracking-[0.24em] text-[var(--coral)]">{copy.eyebrow}</p><h1 className="serif max-w-2xl text-5xl leading-[1.04] text-[var(--ink)] md:text-6xl">{copy.title}</h1><p className="mt-5 max-w-xl text-sm leading-6 text-[var(--muted-ink)]">{copy.description}</p></div><div className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5"><p className="mono text-[9px] uppercase tracking-[0.18em] text-[var(--muted-ink)]">Active book</p><p className="mt-2 truncate text-sm font-semibold text-[var(--ink)]">{project.data.name}</p></div></header>
+      <SectionShell maxWidth="max-w-5xl">
         <PageBatchBoard
           projectId={projectId}
           onOpenPage={(pagePlanId) => {
@@ -94,23 +76,51 @@ export default function StudioSection({ projectId, section }: { projectId: strin
             document.getElementById("page-detail")?.scrollIntoView({ behavior: "smooth", block: "start" });
           }}
         />
-        <div id="page-detail" className="scroll-mt-6">
+        <div id="page-detail" className="mt-8 scroll-mt-6">
           <PromptStudio projectId={projectId} focusPagePlanId={focusPagePlanId} />
         </div>
-        <PageGenerationStudio projectId={projectId} focusPagePlanId={focusPagePlanId} />
-        <VisualReferenceDesk projectId={projectId} />
-      </div>
+        <div className="mt-8">
+          <PageGenerationStudio projectId={projectId} focusPagePlanId={focusPagePlanId} />
+        </div>
+        <div className="mt-8">
+          <VisualReferenceDesk projectId={projectId} />
+        </div>
+      </SectionShell>
+    );
+  }
+
+  if (section === "cover-desk") {
+    return (
+      <SectionShell>
+        <CoverDesk projectId={projectId} />
+      </SectionShell>
+    );
+  }
+
+  if (section === "validation") {
+    return (
+      <SectionShell>
+        <ValidationDesk projectId={projectId} />
+      </SectionShell>
+    );
+  }
+
+  if (section === "exports") {
+    return (
+      <SectionShell>
+        <ExportCenter projectId={projectId} />
+      </SectionShell>
     );
   }
 
   return (
     <div className="mx-auto max-w-5xl">
-      <div className="mb-7 flex items-center justify-between gap-4"><Link href="/projects" className="inline-flex items-center gap-2 text-xs font-semibold text-[var(--muted-ink)] hover:text-[var(--ink)]"><ArrowLeft size={15} /> All projects</Link><span className="mono rounded-full bg-[#e9f2ed] px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-[#517b68]">Draft workspace</span></div>
-      <header className="grid gap-7 border-b border-[var(--line)] pb-10 md:grid-cols-[1fr_280px] md:items-end">
-        <div><p className="mono mb-3 text-[10px] uppercase tracking-[0.24em] text-[var(--coral)]">{copy.eyebrow}</p><h1 className="serif max-w-2xl text-5xl leading-[1.04] text-[var(--ink)] md:text-6xl">{copy.title}</h1><p className="mt-5 max-w-xl text-sm leading-6 text-[var(--muted-ink)]">{copy.description}</p></div>
-        <div className="rounded-[24px] border border-[var(--line)] bg-[var(--paper-strong)] p-5"><div className="flex items-center gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--navy)] text-white"><Icon size={19} /></div><div className="min-w-0"><p className="mono text-[9px] uppercase tracking-[0.18em] text-[var(--muted-ink)]">Active book</p><p className="truncate text-sm font-semibold text-[var(--ink)]">{project.data.name}</p></div></div><div className="mt-5 flex items-center justify-between border-t border-[var(--line)] pt-4"><span className="text-xs text-[var(--muted-ink)]">Production status</span><span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#517b68]"><CircleDashed size={13} /> Planning</span></div></div>
-      </header>
-      <section className="mt-9"><EmptyState title="This station is ready for your notes." description="The route and project context are live. Feature-specific editor, generation, validation, and export actions will be added in their dedicated implementation steps." action={<Link href={`/projects/${projectId}/${copy.next}`} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-5 py-3 text-sm font-semibold text-white hover:bg-[#2d465f]">{copy.nextLabel} <ArrowRight size={16} /></Link>} /></section>
+      <p className="mono mb-3 text-[10px] uppercase tracking-[0.24em] text-[var(--coral)]">{copy.eyebrow}</p>
+      <h1 className="serif text-4xl text-[var(--ink)]">{copy.title}</h1>
+      <p className="mt-3 max-w-xl text-sm leading-6 text-[var(--muted-ink)]">{copy.description}</p>
+      <section className="mt-9">
+        <EmptyState title="Coming soon." description="This section is on its way." action={<Link href={`/projects/${projectId}/${copy.next}`} className="inline-flex items-center gap-2 rounded-full bg-[var(--navy)] px-5 py-3 text-sm font-semibold text-white hover:bg-[#2d465f]">{copy.nextLabel} <ArrowRight size={16} /></Link>} />
+      </section>
     </div>
   );
 }
