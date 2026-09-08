@@ -26,6 +26,7 @@ import { addProvenanceEntry, assertPublishingReadyForExport, classifyContentPoli
 import { createProject, deleteProjectDataForUser, getProjectForUser, listProjects, updateProjectForUser, upsertUser, type AppDatabase, type UserRecord } from "./db";
 import { createRateLimiter } from "./security";
 import { getTextLayout, saveTextLayout } from "./text-layout-store";
+import { clearQueue, enqueueGenerations, queueStatus } from "./generation-queue";
 import { FONT_CHOICES, recommendLayout } from "../shared/text-layout";
 import { cleanupExpiredObjects, getOperationsDashboard, getRecoveryCandidates, reconcileOneJob, recordOperationalRecovery, retryOneStorageCopy, regenerateOneExport } from "./operations";
 
@@ -83,7 +84,12 @@ export function createAppRouter(
   const storage = options.storage ?? createLocalPrivateStorage();
   const generationService = "generationService" in options ? options.generationService : (process.env.NODE_ENV === "test" ? undefined : createFalGenerationService({ adapter: getFalQueueClient(), storage, webhookUrl: process.env.FAL_WEBHOOK_URL }));
   const referenceLimits = getReferenceValidationLimits();
-  const submitLimiter = createRateLimiter(60_000, 12);
+  /**
+   * Bulk work now goes through the paced queue worker rather than a loop of
+   * calls from the browser, so this only has to stop a runaway client. At 12 a
+   * minute it was the thing that killed a 33-page batch at page 12.
+   */
+  const submitLimiter = createRateLimiter(60_000, 60);
   const uploadLimiter = createRateLimiter(60_000, 20);
   const exportLimiter = createRateLimiter(60_000, 6);
   const policyLimiter = createRateLimiter(60_000, 30);
@@ -498,6 +504,26 @@ export function createAppRouter(
          * flight, so finished images land and concurrency slots free up even
          * on a deployment with no webhook configured.
          */
+        /**
+         * Queue pages for the background worker to submit. This records intent
+         * only — no provider call — so requesting a whole book is one fast
+         * request that the submit limiter cannot cut short partway through.
+         */
+        enqueue: protectedProcedure.input(projectIdInput.extend({
+          items: z.array(z.object({ pagePlanId: z.string().min(1), promptVersionId: z.string().min(1) })).min(1).max(200),
+          maxSpendUsd: z.number().min(0).max(500).optional(),
+        })).mutation(({ ctx, input }) => {
+          try { return enqueueGenerations(db, ctx.user.id, input.projectId, input.items, { maxSpendUsd: input.maxSpendUsd }); }
+          catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "The batch could not be queued." }); }
+        }),
+        queueStatus: protectedProcedure.input(projectIdInput).query(({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          return queueStatus(db, ctx.user.id, input.projectId);
+        }),
+        clearQueue: protectedProcedure.input(projectIdInput).mutation(({ ctx, input }) => {
+          if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });
+          return clearQueue(db, ctx.user.id, input.projectId);
+        }),
         syncActive: protectedProcedure.input(projectIdInput).mutation(async ({ ctx, input }) => {
           if (!generationService) return { checked: 0, advanced: 0 };
           if (!getProjectForUser(db, ctx.user.id, input.projectId)) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found." });

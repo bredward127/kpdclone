@@ -43,6 +43,10 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
   const cancelAll = trpc.studio.generationJobs.cancelAll.useMutation();
   const prepare = trpc.studio.prompts.prepareForGeneration.useMutation();
   const syncActive = trpc.studio.generationJobs.syncActive.useMutation();
+  const enqueue = trpc.studio.generationJobs.enqueue.useMutation();
+  const clearQueue = trpc.studio.generationJobs.clearQueue.useMutation();
+  // Poll while the worker is draining so the count moves without a refresh.
+  const queue = trpc.studio.generationJobs.queueStatus.useQuery({ projectId }, { refetchInterval: (query) => query.state.data?.draining ? 5_000 : false, placeholderData: (prev) => prev });
 
   const rows = board.data ?? [];
   const activeModel = models.data?.[0] ?? null;
@@ -63,7 +67,7 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
    * never collected: pages span forever and the concurrency limit stayed full.
    * While anything is in flight, ask the server to reconcile against FAL.
    */
-  const anyActive = rows.some((row) => row.activeJob);
+  const anyActive = rows.some((row) => row.activeJob) || Boolean(queue.data?.draining);
   useEffect(() => {
     if (!anyActive) return;
     let cancelled = false;
@@ -101,32 +105,16 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
         return;
       }
 
-      // Submit sequentially and stop cleanly at the concurrency ceiling rather
-      // than firing every page at once and failing the rest of the batch.
-      let done = 0;
-      const byId = new Map(rows.map((row) => [row.pagePlanId, row]));
-      for (const entry of result.prepared) {
-        const row = byId.get(entry.pagePlanId);
-        if (row?.activeJob) continue;
-        setBusy(`Generating page ${row?.pageNumber ?? "?"} (${done + 1} of ${result.prepared.length})…`);
-        try {
-          await submit.mutateAsync({
-            projectId, pagePlanId: entry.pagePlanId, promptVersionId: entry.promptVersionId,
-            generationModel: result.model.displayName, generationEndpoint: result.model.endpointId,
-            aspectRatio: result.aspectRatio, referenceAssetIds: [],
-            expectedOutputConstraints: { mimeTypes: ["image/png", "image/jpeg", "image/webp"], maxPixels: 25_000_000 },
-            idempotencyKey: `bulk-${entry.pagePlanId}-${entry.promptVersionId}`,
-            requestKind: "initial",
-          });
-          done += 1;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "a page could not be submitted.";
-          notes.push(`Submitted ${done} of ${result.prepared.length}, then stopped: ${message}`);
-          break;
-        }
-      }
-      if (done === result.prepared.length) notes.push(`${done} image${done === 1 ? "" : "s"} submitted, about ${costFor(done)} at ${quality} quality.`);
-      await refresh();
+      /**
+       * Hand the whole batch to the server queue in one request. Submitting in
+       * a loop from here tripped the per-minute submit limiter partway through
+       * ("submitted 12 of 33") and left the rest for the author to retry.
+       */
+      setBusy(`Queueing ${result.prepared.length} page${result.prepared.length === 1 ? "" : "s"}…`);
+      const enqueued = await enqueue.mutateAsync({ projectId, items: result.prepared.map((entry) => ({ pagePlanId: entry.pagePlanId, promptVersionId: entry.promptVersionId })) });
+      notes.push(`${enqueued.queued} page${enqueued.queued === 1 ? "" : "s"} queued, about ${formatUsd(enqueued.estimatedCostUsd)} at ${quality} quality. They generate steadily in the background — you can leave this page.`);
+      if (enqueued.skipped.length) notes.push(`${enqueued.skipped.length} skipped: ${enqueued.skipped.slice(0, 2).map((entry) => entry.reason).join(" ")}`);
+      await Promise.all([refresh(), utils.studio.generationJobs.queueStatus.invalidate({ projectId })]);
       setNotice({ text: notes.join(" "), kind: "info" });
     } catch (error) {
       await refresh();
@@ -251,6 +239,40 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
           <button type="button" onClick={() => setView("list")} aria-pressed={view === "list"} className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold ${view === "list" ? "bg-[var(--navy)] text-white" : "text-[var(--ink)]"}`}><List size={13} />List</button>
         </span>
       </div>
+
+      {queue.data && (queue.data.pending > 0 || queue.data.failed > 0) && (
+        <div className="mt-4 rounded-2xl border border-[#bcd8cb] bg-[#f0f7f3] p-4">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {queue.data.pending > 0 ? <Loader2 size={15} className="shrink-0 animate-spin text-[#356b63]" /> : <CheckCircle2 size={15} className="shrink-0 text-[#356b63]" />}
+            <p className="text-sm font-semibold text-[#2f5f57]">
+              {queue.data.pending > 0
+                ? `Generating in the background — ${queue.data.pending} page${queue.data.pending === 1 ? "" : "s"} still queued`
+                : "Queue finished."}
+            </p>
+            {queue.data.pending > 0 && <span className="text-xs text-[var(--muted-ink)]">about {formatUsd(queue.data.estimatedRemainingCostUsd)} still to spend</span>}
+            {queue.data.pending > 0 && (
+              <button
+                type="button"
+                onClick={async () => {
+                  const result = await clearQueue.mutateAsync({ projectId });
+                  await utils.studio.generationJobs.queueStatus.invalidate({ projectId });
+                  setNotice({ text: `${result.cancelled} queued page${result.cancelled === 1 ? "" : "s"} cancelled before being sent. Nothing was charged for them.`, kind: "info" });
+                }}
+                disabled={clearQueue.isPending}
+                className="ml-auto rounded-full border border-[#8fb6a8] px-3 py-1 text-[11px] font-semibold text-[#2f5f57] hover:bg-white disabled:opacity-45"
+              >
+                Stop the queue
+              </button>
+            )}
+          </div>
+          <p className="mt-1.5 text-xs text-[var(--muted-ink)]">You can close this page — the server keeps working through the queue and images appear here as they finish.</p>
+          {queue.data.failed > 0 && (
+            <p className="mt-2 text-xs text-[#7f433a]">
+              {queue.data.failed} page{queue.data.failed === 1 ? "" : "s"} could not be sent{queue.data.failures[0]?.lastError ? `: ${queue.data.failures[0].lastError}` : "."}
+            </p>
+          )}
+        </div>
+      )}
 
       {busy && <p className="mt-3 inline-flex items-center gap-2 text-sm text-[var(--navy)]" role="status"><Loader2 size={15} className="animate-spin" />{busy}</p>}
       {notice && (notice.kind === "error"

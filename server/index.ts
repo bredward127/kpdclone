@@ -14,6 +14,7 @@ import { getGeneratedAssetByStorageReferenceForUser } from "./db-studio";
 import { readPrivateStorageBytes, verifyStorageAccessSignature } from "./storage";
 import crypto from "node:crypto";
 import { applySecurityHeaders, createRateLimiter, redactSensitive } from "./security";
+import { startGenerationWorker } from "./generation-queue";
 
 assertFalConfiguredForProduction();
 assertFalWebhookConfiguredForProduction();
@@ -23,6 +24,13 @@ const storage = createLocalPrivateStorage();
 const falConfig = loadFalConfig();
 const generationService = falConfig ? createFalGenerationService({ adapter: getFalQueueClient(), storage, webhookUrl: process.env.FAL_WEBHOOK_URL }) : undefined;
 const appRouter = createAppRouter(db, { storage, generationService });
+/**
+ * Drains queued page generations at a controlled pace and collects finished
+ * work. Bulk generation was previously a loop of submits from the browser,
+ * which tripped the per-minute submit limiter partway through a book and
+ * abandoned the remainder.
+ */
+const generationWorker = generationService ? startGenerationWorker(db, generationService) : undefined;
 const app = express();
 const webhookLimiter = createRateLimiter(60_000, 120);
 app.use((_req, res, next) => { applySecurityHeaders(res); next(); });
