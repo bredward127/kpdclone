@@ -296,7 +296,16 @@ export function createFalGenerationService(dependencies: { adapter: GenerationAd
       const existing = db.prepare(`SELECT id FROM generation_jobs WHERE user_id = ? AND idempotency_key = ?`).get(userId, input.idempotencyKey) as { id: string } | undefined;
       if (existing) {
         const saved = getGenerationJobForUser(db, userId, existing.id)!;
-        return { localJobId: saved.id, falRequestId: saved.falRequestId ?? "", status: saved.localStatus, providerStatus: saved.providerStatus ?? "", retryCount: saved.retryCount };
+        // Idempotency exists to stop the author paying twice for one picture,
+        // so it only applies once the provider actually took the request. A
+        // job with no request id never reached FAL and can never produce an
+        // image; replaying it as though it had succeeded strands the page
+        // forever — the queue calls it sent, and nothing is ever polled.
+        // Release the key instead, keeping the dead attempt as history.
+        if (saved.falRequestId) {
+          return { localJobId: saved.id, falRequestId: saved.falRequestId, status: saved.localStatus, providerStatus: saved.providerStatus ?? "", retryCount: saved.retryCount };
+        }
+        db.prepare(`UPDATE generation_jobs SET idempotency_key = NULL, updated_at = ? WHERE user_id = ? AND id = ?`).run(now(), userId, existing.id);
       }
     }
     await enforceConcurrency(db, userId, input.projectId);

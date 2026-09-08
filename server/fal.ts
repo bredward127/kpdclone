@@ -5,7 +5,17 @@ const falEnvSchema = z.object({
   FAL_BASE_URL: z.string().url().optional(),
   FAL_QUEUE_BASE_URL: z.string().url().optional(),
   FAL_SYNC_BASE_URL: z.string().url().optional(),
+  FAL_TIMEOUT_MS: z.string().optional(),
+  FAL_SUBMIT_TIMEOUT_MS: z.string().optional(),
+  FAL_DOWNLOAD_TIMEOUT_MS: z.string().optional(),
 });
+
+/** Reads a millisecond budget from the environment, clamped to a sane band. */
+function timeoutFromEnv(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.floor(parsed), min), max);
+}
 
 export type FalConfig = {
   apiKey: string;
@@ -17,7 +27,17 @@ export type FalConfig = {
    * completion from the POST and exposes no /requests/{id}/status sub-path.
    */
   syncBaseUrl: string;
+  /** Budget for small requests: status polls, cancels, the connection check. */
   timeoutMs: number;
+  /**
+   * Budget for submitting work. Deliberately far larger than `timeoutMs`:
+   * an image-conditioned endpoint carries the reference art inline, so the
+   * POST body can be several megabytes and the upload alone outlasts any
+   * budget sized for a status poll.
+   */
+  submitTimeoutMs: number;
+  /** Budget for pulling a finished image back, which is also megabytes. */
+  downloadTimeoutMs: number;
 };
 
 export type FalConnectionStatus = {
@@ -44,7 +64,9 @@ export function loadFalConfig(env: NodeJS.ProcessEnv = process.env): FalConfig |
     baseUrl: (parsed.data.FAL_BASE_URL ?? "https://api.fal.ai").replace(/\/$/, ""),
     queueBaseUrl: (parsed.data.FAL_QUEUE_BASE_URL ?? "https://queue.fal.run").replace(/\/$/, ""),
     syncBaseUrl: (parsed.data.FAL_SYNC_BASE_URL ?? "https://fal.run").replace(/\/$/, ""),
-    timeoutMs: 5_000,
+    timeoutMs: timeoutFromEnv(parsed.data.FAL_TIMEOUT_MS, 15_000, 1_000, 120_000),
+    submitTimeoutMs: timeoutFromEnv(parsed.data.FAL_SUBMIT_TIMEOUT_MS, 120_000, 5_000, 600_000),
+    downloadTimeoutMs: timeoutFromEnv(parsed.data.FAL_DOWNLOAD_TIMEOUT_MS, 60_000, 5_000, 600_000),
   };
 }
 

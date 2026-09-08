@@ -26,6 +26,14 @@ const MAX_ATTEMPTS = 3;
 function now(): string { return new Date().toISOString(); }
 
 /**
+ * True only for a refusal that resolves on its own as in-flight work drains:
+ * our own per-user/per-project cap, or the provider's rate limit.
+ */
+export function isCapacityRefusal(message: string): boolean {
+  return /concurrency limit reached|Too many generation requests|rate limit|HTTP 429/i.test(message);
+}
+
+/**
  * How many submissions the worker makes per tick, and how long it waits between
  * ticks. Deliberately conservative: the provider queues work anyway, so pacing
  * costs nothing but avoids the submit limiter and gives the author a running
@@ -117,6 +125,17 @@ export function queueStatus(db: AppDatabase, userId: string, projectId: string) 
     `SELECT page_plan_id AS pagePlanId, last_error AS lastError FROM generation_queue
      WHERE user_id = ? AND project_id = ? AND status = 'failed' ORDER BY updated_at DESC LIMIT 10`,
   ).all(userId, projectId) as Array<{ pagePlanId: string; lastError: string | null }>;
+  // A page waiting *because something went wrong* reads as an idle queue
+  // unless its error is reported while it is still pending. Waiting for a
+  // free concurrency slot is not a problem, so it is counted separately
+  // rather than alarming the author about a queue that is working.
+  const waiting = db.prepare(
+    `SELECT page_plan_id AS pagePlanId, last_error AS lastError, attempts FROM generation_queue
+     WHERE user_id = ? AND project_id = ? AND status IN ('pending', 'submitting') AND last_error IS NOT NULL
+     ORDER BY updated_at DESC LIMIT 20`,
+  ).all(userId, projectId) as Array<{ pagePlanId: string; lastError: string; attempts: number }>;
+  const retrying = waiting.filter((row) => !isCapacityRefusal(row.lastError)).slice(0, 5);
+  const waitingForCapacity = waiting.length - retrying.length;
   const spend = db.prepare(
     `SELECT COALESCE(SUM(estimated_cost_usd), 0) AS total FROM generation_queue
      WHERE user_id = ? AND project_id = ? AND status IN ('pending', 'submitting', 'submitted')`,
@@ -129,6 +148,8 @@ export function queueStatus(db: AppDatabase, userId: string, projectId: string) 
     cancelled: byStatus.cancelled ?? 0,
     estimatedRemainingCostUsd: Number((((byStatus.pending ?? 0) + (byStatus.submitting ?? 0)) && spend.total ? spend.total : 0).toFixed(4)),
     failures,
+    retrying,
+    waitingForCapacity,
     draining: pending > 0,
   };
 }
@@ -198,9 +219,15 @@ export async function drainQueueOnce(
       submitted += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message : "This page could not be submitted.";
-      // Capacity, not a fault: wait and try again rather than burning an attempt.
-      const transient = /concurrency limit reached|Too many|timed out|unavailable|could not be reached/i.test(message);
-      if (transient) {
+      // Capacity, not a fault: wait and try again rather than burning an
+      // attempt. This is the only refusal allowed to retry forever, because
+      // it clears by itself as jobs already in flight finish.
+      //
+      // A timeout or an unreachable provider is deliberately NOT in here.
+      // Retrying those without consuming an attempt makes a broken provider
+      // look like a queue that is quietly working: pages sit at "queued"
+      // forever, nothing reaches the provider, and no error ever surfaces.
+      if (isCapacityRefusal(message)) {
         db.prepare(`UPDATE generation_queue SET status = 'pending', attempts = MAX(0, attempts - 1), last_error = ?, updated_at = ? WHERE id = ?`).run(message, now(), row.id);
         deferred += 1;
         // Nothing will succeed this tick once capacity is gone.

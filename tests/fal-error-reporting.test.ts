@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createFalQueueClient, describeProviderBody, FalProviderError } from "../server/fal-queue";
 import { draftStoryAndPages } from "../server/story-drafting";
 
-const config = { apiKey: "test-only", baseUrl: "https://api.fal.ai", queueBaseUrl: "https://queue.fal.run", syncBaseUrl: "https://fal.run", timeoutMs: 5_000 };
+const config = { apiKey: "test-only", baseUrl: "https://api.fal.ai", queueBaseUrl: "https://queue.fal.run", syncBaseUrl: "https://fal.run", timeoutMs: 5_000, submitTimeoutMs: 120_000, downloadTimeoutMs: 60_000 };
 
 describe("FAL error bodies are reported, not discarded", () => {
   it("reads the OpenAI-compatible router's error shape", () => {

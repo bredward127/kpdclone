@@ -129,15 +129,30 @@ function providerError(response: Response, body: Record<string, unknown>): FalPr
 export function createFalQueueClient(config: FalConfig, dependencies: QueueDependencies = {}) {
   const fetchImpl = dependencies.fetchImpl ?? fetch;
   const timeoutMs = config.timeoutMs;
-  const request = async (url: string, init: RequestInit): Promise<{ response: Response; body: Record<string, unknown> }> => {
+  /**
+   * Every operation gets its own budget. Submitting an image-conditioned page
+   * uploads the reference art inline, so it needs far longer than a status
+   * poll; a shared short budget aborted those POSTs before the body finished
+   * uploading, which looked exactly like the provider never receiving them.
+   */
+  const request = async (
+    url: string,
+    init: RequestInit,
+    operation: { label: string; timeoutMs: number } = { label: "operation", timeoutMs },
+  ): Promise<{ response: Response; body: Record<string, unknown> }> => {
     try {
-      const response = await fetchImpl(url, { ...init, signal: init.signal ?? AbortSignal.timeout(timeoutMs) });
+      const response = await fetchImpl(url, { ...init, signal: init.signal ?? AbortSignal.timeout(operation.timeoutMs) });
       const body = safeJson(await response.text());
       if (!response.ok) throw providerError(response, body);
       return { response, body };
     } catch (error) {
       if (error instanceof FalProviderError) throw error;
-      throw new FalProviderError("FAL queue operation timed out or could not be reached.", { classification: "provider_timeout", retryable: true });
+      // Name the operation and its budget: the queue stores this text as the
+      // page's last error, and "something timed out" is not a diagnosis.
+      const reason = error instanceof Error && error.name === "TimeoutError"
+        ? `gave up after ${Math.round(operation.timeoutMs / 1000)}s`
+        : "could not be reached";
+      throw new FalProviderError(`FAL queue ${operation.label} ${reason}.`, { classification: "provider_timeout", retryable: true });
     }
   };
   const headers = (extra: Record<string, string> = {}) => ({ Authorization: `Key ${config.apiKey}`, Accept: "application/json", "Content-Type": "application/json", ...extra });
@@ -145,23 +160,27 @@ export function createFalQueueClient(config: FalConfig, dependencies: QueueDepen
   return {
     async submit(endpoint: string, input: Record<string, unknown>, options: { webhookUrl?: string } = {}): Promise<FalSubmitResponse> {
       const extra: Record<string, string> = options.webhookUrl ? { "x-fal-webhook-url": options.webhookUrl } : {};
-      const { body } = await request(endpointPath(config.queueBaseUrl, endpoint, ""), { method: "POST", headers: headers(extra), body: JSON.stringify(input) });
+      const { body } = await request(
+        endpointPath(config.queueBaseUrl, endpoint, ""),
+        { method: "POST", headers: headers(extra), body: JSON.stringify(input) },
+        { label: "submit", timeoutMs: config.submitTimeoutMs },
+      );
       const requestId = typeof body.request_id === "string" ? body.request_id : "";
       if (!requestId) throw new FalProviderError("FAL returned an invalid queue request.", { classification: "provider_invalid_response", retryable: false });
       return { requestId, gatewayRequestId: typeof body.gateway_request_id === "string" ? body.gateway_request_id : null, responseUrl: typeof body.response_url === "string" ? body.response_url : null, statusUrl: typeof body.status_url === "string" ? body.status_url : null, cancelUrl: typeof body.cancel_url === "string" ? body.cancel_url : null };
     },
     async status(endpoint: string, requestId: string): Promise<FalStatusResponse> {
-      const { body } = await request(queueRequestPath(config.queueBaseUrl, endpoint, `/requests/${encodeURIComponent(requestId)}/status`), { method: "GET", headers: headers() });
+      const { body } = await request(queueRequestPath(config.queueBaseUrl, endpoint, `/requests/${encodeURIComponent(requestId)}/status`), { method: "GET", headers: headers() }, { label: "status check", timeoutMs });
       if (body.status !== "IN_QUEUE" && body.status !== "IN_PROGRESS" && body.status !== "COMPLETED") throw new FalProviderError("FAL returned an invalid queue status.", { classification: "provider_invalid_response", retryable: false });
       return { status: body.status, requestId, responseUrl: typeof body.response_url === "string" ? body.response_url : undefined, queuePosition: typeof body.queue_position === "number" ? body.queue_position : undefined, error: typeof body.error === "string" ? body.error : undefined, errorType: typeof body.error_type === "string" ? body.error_type : undefined };
     },
     async result(endpoint: string, requestId: string): Promise<Record<string, unknown>> {
-      const { body } = await request(queueRequestPath(config.queueBaseUrl, endpoint, `/requests/${encodeURIComponent(requestId)}/response`), { method: "GET", headers: headers() });
+      const { body } = await request(queueRequestPath(config.queueBaseUrl, endpoint, `/requests/${encodeURIComponent(requestId)}/response`), { method: "GET", headers: headers() }, { label: "result read", timeoutMs: config.downloadTimeoutMs });
       return body;
     },
     async cancel(endpoint: string, requestId: string): Promise<"cancellation_requested" | "already_completed" | "not_found"> {
       try {
-        const { body } = await request(queueRequestPath(config.queueBaseUrl, endpoint, `/requests/${encodeURIComponent(requestId)}/cancel`), { method: "POST", headers: headers(), body: "{}" });
+        const { body } = await request(queueRequestPath(config.queueBaseUrl, endpoint, `/requests/${encodeURIComponent(requestId)}/cancel`), { method: "POST", headers: headers(), body: "{}" }, { label: "cancel", timeoutMs });
         return body.status === "ALREADY_COMPLETED" ? "already_completed" : "cancellation_requested";
       } catch (error) {
         if (error instanceof FalProviderError && error.classification === "provider_not_found") return "not_found";
@@ -174,7 +193,7 @@ export function createFalQueueClient(config: FalConfig, dependencies: QueueDepen
       try { parsed = new URL(url); } catch { throw new FalProviderError("FAL returned an invalid result URL.", { classification: "result_download_rejected", retryable: false }); }
       if (parsed.protocol !== "https:" || !(parsed.hostname === "fal.media" || parsed.hostname.endsWith(".fal.media"))) throw new FalProviderError("FAL result URL is not an approved media URL.", { classification: "result_download_rejected", retryable: false });
       try {
-        const response = await fetchImpl(parsed.toString(), { method: "GET", headers: { Accept: "image/png,image/jpeg,image/webp" }, signal: AbortSignal.timeout(timeoutMs) });
+        const response = await fetchImpl(parsed.toString(), { method: "GET", headers: { Accept: "image/png,image/jpeg,image/webp" }, signal: AbortSignal.timeout(config.downloadTimeoutMs) });
         if (!response.ok) throw new FalProviderError("FAL result URL expired or was unavailable.", { classification: "result_download_expired", retryable: response.status >= 500, providerStatus: response.status });
         const contentType = response.headers.get("content-type")?.split(";", 1)[0] ?? "";
         if (!/^image\/(png|jpeg|webp)$/.test(contentType)) throw new FalProviderError("FAL result was not a supported image.", { classification: "result_download_rejected", retryable: false });

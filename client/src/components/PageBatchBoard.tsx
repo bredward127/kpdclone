@@ -266,6 +266,16 @@ export default function PageBatchBoard({ projectId, onOpenPage }: { projectId: s
             )}
           </div>
           <p className="mt-1.5 text-xs text-[var(--muted-ink)]">You can close this page — the server keeps working through the queue and images appear here as they finish.</p>
+          {queue.data.waitingForCapacity > 0 && (
+            <p className="mt-1.5 text-xs text-[var(--muted-ink)]">
+              {queue.data.waitingForCapacity} page{queue.data.waitingForCapacity === 1 ? "" : "s"} waiting for a free slot — they go out as the ones in flight finish.
+            </p>
+          )}
+          {queue.data.retrying[0] && (
+            <p className="mt-2 text-xs text-[#7f433a]">
+              Retrying after a problem (attempt {queue.data.retrying[0].attempts} of 3 failed): {queue.data.retrying[0].lastError}
+            </p>
+          )}
           {queue.data.failed > 0 && (
             <p className="mt-2 text-xs text-[#7f433a]">
               {queue.data.failed} page{queue.data.failed === 1 ? "" : "s"} could not be sent{queue.data.failures[0]?.lastError ? `: ${queue.data.failures[0].lastError}` : "."}
